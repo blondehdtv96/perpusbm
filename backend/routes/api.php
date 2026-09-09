@@ -22,7 +22,7 @@ Route::get('/registration/options', [StudentRegistrationController::class, 'opti
 Route::post('/registration', [StudentRegistrationController::class, 'store'])->middleware('throttle:5,1');
 
 Route::prefix('auth')->group(function (): void {
-    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
+    Route::post('/login', [AuthController::class, 'login']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
     Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:5,1');
     Route::middleware('auth:sanctum')->group(function (): void {

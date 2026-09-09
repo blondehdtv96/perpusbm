@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { EmptyState, Feedback, LoadingRows, PageHeader, Panel, formatDate } from '../components/ui'
+import { EmptyState, Feedback, LoadingRows, PageHeader, Panel } from '../components/ui'
 import { api } from '../lib/api'
+import { formatDate } from '../lib/format'
 
 export default function AuditPage() {
   const [logs, setLogs] = useState([]); const [action, setAction] = useState(''); const [page, setPage] = useState(1); const [pagination, setPagination] = useState({ current: 1, last: 1, total: 0 })

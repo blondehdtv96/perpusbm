@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { EmptyState, Feedback, LoadingRows, PageHeader, Panel, formatCurrency } from '../components/ui'
+import { EmptyState, Feedback, LoadingRows, PageHeader, Panel } from '../components/ui'
 import { api } from '../lib/api'
+import { formatCurrency } from '../lib/format'
 import { useAuth } from '../store/auth'
 
 export default function FinesPage() {

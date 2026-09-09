@@ -17,5 +17,3 @@ export function LoadingRows({ count = 4 }) {
 export function Tabs({ items, value, onChange }) {
   return <div className="inline-flex rounded-2xl border border-slate-200 bg-slate-100 p-1" role="tablist">{items.map((item) => <button type="button" role="tab" aria-selected={value === item.value} key={item.value} onClick={() => onChange(item.value)} className={`min-h-10 rounded-xl px-4 text-sm font-bold transition ${value === item.value ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>{item.label}</button>)}</div>
 }
-export const formatCurrency = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value ?? 0))
-export const formatDate = (value, withTime = false) => value ? new Intl.DateTimeFormat('id-ID', withTime ? { dateStyle: 'medium', timeStyle: 'short' } : { dateStyle: 'medium' }).format(new Date(value)) : '-'

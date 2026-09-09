@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { EmptyState, Feedback, LoadingRows, PageHeader, Panel, formatDate } from '../components/ui'
+import { EmptyState, Feedback, LoadingRows, PageHeader, Panel } from '../components/ui'
 import { api } from '../lib/api'
+import { formatDate } from '../lib/format'
 
 export default function NotificationsPage() {
   const [items, setItems] = useState([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [busy, setBusy] = useState('')

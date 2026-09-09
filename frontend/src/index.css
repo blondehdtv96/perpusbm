@@ -7,15 +7,6 @@
   --color-navy-800: #12365e;
   --color-brand-blue: #155eef;
   --color-brand-red: #dc2626;
-  /* Existing emerald utilities inherit the new school-blue identity. */
-  --color-emerald-50: #eff6ff;
-  --color-emerald-100: #dbeafe;
-  --color-emerald-200: #bfdbfe;
-  --color-emerald-300: #93c5fd;
-  --color-emerald-600: #2563eb;
-  --color-emerald-700: #1d4ed8;
-  --color-emerald-800: #1e40af;
-  --color-emerald-950: #071a35;
 }
 
 * { box-sizing: border-box; }

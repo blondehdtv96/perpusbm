@@ -1,10 +1,11 @@
 const API_URL = import.meta.env.VITE_API_URL ?? ''
 
 export class ApiError extends Error {
-  constructor(message, status, errors = {}) {
+  constructor(message, status, errors = {}, retryAfter = 0) {
     super(message)
     this.status = status
     this.errors = errors
+    this.retryAfter = retryAfter
   }
 }
 
@@ -34,7 +35,9 @@ export async function api(path, options = {}) {
   if (response.status === 204) return null
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new ApiError(payload.message ?? 'Terjadi kesalahan.', response.status, payload.errors)
+    const headerRetryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10)
+    const retryAfter = Number(payload.retry_after) || (Number.isNaN(headerRetryAfter) ? 0 : headerRetryAfter)
+    throw new ApiError(payload.message ?? 'Terjadi kesalahan.', response.status, payload.errors, retryAfter)
   }
   return payload
 }

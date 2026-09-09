@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { EmptyState, Feedback, LoadingRows, PageHeader, Panel, formatCurrency } from '../components/ui'
+import { EmptyState, Feedback, LoadingRows, PageHeader, Panel } from '../components/ui'
 import { api } from '../lib/api'
+import { formatCurrency } from '../lib/format'
 import { useAuth } from '../store/auth'
 
 const policyFields = [['max_books', 'Maksimal buku', 'Buku yang dapat dipinjam bersamaan'], ['loan_days', 'Durasi pinjaman', 'Jumlah hari sebelum jatuh tempo'], ['fine_per_day', 'Denda per hari', 'Nominal denda keterlambatan'], ['fine_block_threshold', 'Ambang blokir', 'Batas denda untuk memblokir peminjaman']]
