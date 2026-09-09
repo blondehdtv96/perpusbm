@@ -4,6 +4,7 @@ import AppShell from './components/AppShell'
 import { useAuth } from './store/auth'
 
 const AccessDeniedPage = lazy(() => import('./pages/AccessDeniedPage'))
+const AcademicMasterPage = lazy(() => import('./pages/AcademicMasterPage'))
 const AuditPage = lazy(() => import('./pages/AuditPage'))
 const CatalogPage = lazy(() => import('./pages/CatalogPage'))
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
@@ -13,6 +14,7 @@ const LoansPage = lazy(() => import('./pages/LoansPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
 const NotificationsPage = lazy(() => import('./pages/NotificationsPage'))
 const ProfilePage = lazy(() => import('./pages/ProfilePage'))
+const RegisterPage = lazy(() => import('./pages/RegisterPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const ScanPage = lazy(() => import('./pages/ScanPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
@@ -34,32 +36,32 @@ export default function App() {
 
   useEffect(() => { initialize() }, [initialize])
 
-  if (loading) {
-    return <div className="grid min-h-screen place-items-center text-slate-500">Memuat BM Library…</div>
-  }
+  if (loading) return <div className="grid min-h-screen place-items-center bg-slate-50 text-slate-500">Memuat BM Library…</div>
 
   return (
     <BrowserRouter>
       <Suspense fallback={<div className="grid min-h-[50vh] place-items-center text-slate-500">Memuat halaman…</div>}>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route element={<ProtectedLayout />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="catalog" element={<CatalogPage />} />
-          <Route path="users" element={<PermissionPage any={['users.view']}><UsersPage /></PermissionPage>} />
-          <Route path="inventory" element={<PermissionPage any={['catalog.create']}><InventoryPage /></PermissionPage>} />
-          <Route path="scan" element={<PermissionPage any={['circulation.borrow', 'circulation.return']}><ScanPage /></PermissionPage>} />
-          <Route path="loans" element={<LoansPage />} />
-          <Route path="fines" element={<FinesPage />} />
-          <Route path="reports" element={<PermissionPage any={['reports.view']}><ReportsPage /></PermissionPage>} />
-          <Route path="settings" element={<PermissionPage any={['settings.view', 'settings.manage']}><SettingsPage /></PermissionPage>} />
-          <Route path="audit" element={<PermissionPage any={['audit.view']}><AuditPage /></PermissionPage>} />
-          <Route path="notifications" element={<NotificationsPage />} />
-          <Route path="profile" element={<ProfilePage />} />
-          <Route path="forbidden" element={<AccessDeniedPage />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route element={<ProtectedLayout />}>
+            <Route index element={<DashboardPage />} />
+            <Route path="academic" element={<PermissionPage any={['academic.manage']}><AcademicMasterPage /></PermissionPage>} />
+            <Route path="catalog" element={<CatalogPage />} />
+            <Route path="users" element={<PermissionPage any={['users.view']}><UsersPage /></PermissionPage>} />
+            <Route path="inventory" element={<PermissionPage any={['catalog.create']}><InventoryPage /></PermissionPage>} />
+            <Route path="scan" element={<PermissionPage any={['circulation.borrow', 'circulation.return']}><ScanPage /></PermissionPage>} />
+            <Route path="loans" element={<LoansPage />} />
+            <Route path="fines" element={<FinesPage />} />
+            <Route path="reports" element={<PermissionPage any={['reports.view']}><ReportsPage /></PermissionPage>} />
+            <Route path="settings" element={<PermissionPage any={['settings.view', 'settings.manage']}><SettingsPage /></PermissionPage>} />
+            <Route path="audit" element={<PermissionPage any={['audit.view']}><AuditPage /></PermissionPage>} />
+            <Route path="notifications" element={<NotificationsPage />} />
+            <Route path="profile" element={<ProfilePage />} />
+            <Route path="forbidden" element={<AccessDeniedPage />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </Suspense>
     </BrowserRouter>
   )

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import QrScanner from '../components/QrScanner'
+import { Feedback, PageHeader, Panel, Tabs } from '../components/ui'
 import { ApiError, api } from '../lib/api'
 import { useAuth } from '../store/auth'
 
@@ -41,8 +42,8 @@ export default function ScanPage() {
   const addBook = useCallback((value) => {
     const code = value.trim()
     if (!code) return
-    setBookCodes((current) => current.includes(code) ? current : [...current, code])
-  }, [])
+    setBookCodes((current) => mode === 'return' ? [code] : current.includes(code) ? current : [...current, code])
+  }, [mode])
 
   const detected = useCallback((value) => {
     if (mode === 'borrow' && !memberCode) setMemberCode(value)
@@ -65,23 +66,19 @@ export default function ScanPage() {
     } finally { setSubmitting(false) }
   }
 
-  const switchMode = (next) => { setMode(next); setResult(null); setError(''); setBookCodes([]); setRequestKey(createUuid()) }
+  const switchMode = (next) => { setMode(next); setResult(null); setError(''); setBookCodes([]); setMemberCode(''); setRequestKey(createUuid()) }
+  const tabs = modes.map((item) => ({ value: item, label: item === 'borrow' ? 'Peminjaman' : 'Pengembalian' }))
 
-  return <>
-    <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-sm font-bold text-emerald-700">SIRKULASI</p><h1 className="mt-1 text-3xl font-black tracking-tight">Scan & transaksi</h1><p className="mt-2 text-slate-500">Scan QR atau masukkan NIS/NIP dan kode inventaris.</p></div><button type="button" onClick={() => setCamera((value) => !value)} className="min-h-11 rounded-xl border border-emerald-700 px-4 font-bold text-emerald-800">{camera ? 'Tutup kamera' : 'Buka kamera'}</button></div>
-    <div className="mt-6 inline-flex rounded-2xl bg-slate-200 p-1">{modes.map((item) => <button key={item} onClick={() => switchMode(item)} className={`min-h-11 rounded-xl px-5 text-sm font-bold ${mode === item ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500'}`}>{item === 'borrow' ? 'Peminjaman' : 'Pengembalian'}</button>)}</div>
-
-    <form onSubmit={submit} className="mt-5 grid max-w-4xl gap-5 lg:grid-cols-2">
-      <QrScanner active={camera} onDetected={detected} />
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-7">
-        {mode === 'borrow' && <label className="block text-sm font-bold">QR anggota / NIS / NIP<input required value={memberCode} onChange={(e) => setMemberCode(e.target.value)} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-4 font-mono text-sm outline-none focus:border-emerald-600" placeholder="Scan kartu anggota terlebih dahulu" /></label>}
-        <label className={`${mode === 'borrow' ? 'mt-4' : ''} block text-sm font-bold`}>QR buku / kode inventaris<div className="mt-2 flex gap-2"><input value={manualBook} onChange={(e) => setManualBook(e.target.value)} className="min-h-12 min-w-0 flex-1 rounded-xl border border-slate-300 px-4 font-mono text-sm outline-none focus:border-emerald-600" placeholder="Contoh: BK-000001-001" /><button type="button" onClick={() => { addBook(manualBook); setManualBook('') }} className="rounded-xl bg-slate-900 px-4 font-bold text-white">Tambah</button></div></label>
-
-        <div className="mt-4 space-y-2">{bookCodes.map((code, index) => <div key={code} className="flex items-center justify-between rounded-xl bg-slate-100 px-3 py-2 font-mono text-xs"><span className="truncate">{index + 1}. {code}</span><button type="button" onClick={() => setBookCodes((items) => items.filter((item) => item !== code))} className="ml-3 font-sans font-bold text-red-600">Hapus</button></div>)}{bookCodes.length === 0 && <p className="rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-500">Belum ada buku dipindai.</p>}</div>
-        {error && <div role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</div>}
-        {result && <div role="status" className="mt-4 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800"><p className="font-bold">{result.message}</p>{result.data?.fine_amount > 0 && <p className="mt-1">Denda: Rp{Number(result.data.fine_amount).toLocaleString('id-ID')}</p>}</div>}
-        <button disabled={submitting || !bookCodes.length} className="mt-5 min-h-12 w-full rounded-xl bg-emerald-700 px-5 font-bold text-white hover:bg-emerald-800 disabled:opacity-60">{submitting ? 'Memproses…' : mode === 'borrow' ? `Pinjam ${bookCodes.length} buku` : 'Konfirmasi pengembalian'}</button>
-      </section>
-    </form>
-  </>
+  return <div className="space-y-6"><PageHeader eyebrow="Operasional" title="Sirkulasi buku" description="Proses peminjaman dan pengembalian menggunakan QR atau kode inventaris." actions={<button type="button" onClick={() => setCamera((value) => !value)} className={`min-h-11 rounded-xl px-4 text-sm font-bold ${camera ? 'border border-slate-300 bg-white text-slate-700' : 'bg-blue-700 text-white hover:bg-blue-800'}`}>{camera ? 'Tutup kamera' : 'Buka pemindai QR'}</button>} />
+    <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center"><Tabs items={tabs} value={mode} onChange={switchMode} /><div className="flex items-center gap-2 text-xs font-semibold text-slate-500"><Step active={mode === 'return' || Boolean(memberCode)} number="1" label={mode === 'borrow' ? 'Anggota' : 'Buku'} /><span className="h-px w-5 bg-slate-300" /><Step active={bookCodes.length > 0} number="2" label={mode === 'borrow' ? 'Buku' : 'Konfirmasi'} /></div></div>
+    <form onSubmit={submit} className="grid gap-6 xl:grid-cols-12"><div className="xl:col-span-5">{camera ? <QrScanner active onDetected={detected} /> : <section className="grid min-h-80 place-items-center rounded-3xl border border-dashed border-slate-300 bg-slate-100/70 p-8 text-center"><div><span className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-white text-blue-700 shadow-sm"><ScanIcon /></span><h2 className="mt-5 font-black text-navy-950">Pemindai kamera nonaktif</h2><p className="mt-2 max-w-sm text-sm leading-6 text-slate-500">Buka kamera untuk membaca QR, atau gunakan formulir manual di samping.</p><button type="button" onClick={() => setCamera(true)} className="mt-5 min-h-11 rounded-xl border border-blue-200 bg-blue-50 px-5 text-sm font-bold text-blue-700">Aktifkan kamera</button></div></section>}</div>
+      <Panel className="xl:col-span-7" title={mode === 'borrow' ? 'Data peminjaman' : 'Data pengembalian'} description={mode === 'borrow' ? 'Scan anggota terlebih dahulu, kemudian tambahkan buku.' : 'Scan satu kode buku yang akan dikembalikan.'}><div className="space-y-5">{mode === 'borrow' && <Field label="QR anggota / NIS / NIP" value={memberCode} onChange={setMemberCode} placeholder="Scan kartu atau masukkan identitas anggota" required />}
+        <label className="block text-sm font-bold text-slate-700">QR buku / kode inventaris<div className="mt-2 flex gap-2"><input value={manualBook} onChange={(event) => setManualBook(event.target.value)} className="min-h-12 min-w-0 flex-1 rounded-xl border border-slate-300 px-4 font-mono text-sm" placeholder="Contoh: BK-000001-001" /><button type="button" onClick={() => { addBook(manualBook); setManualBook('') }} className="rounded-xl bg-navy-950 px-5 font-bold text-white hover:bg-navy-900">Tambah</button></div></label>
+        <div><div className="mb-2 flex items-center justify-between"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Buku dipindai</p><span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700">{bookCodes.length}</span></div>{bookCodes.length ? <div className="space-y-2">{bookCodes.map((code, index) => <div key={code} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white text-xs font-black text-blue-700">{index + 1}</span><code className="min-w-0 flex-1 truncate text-xs font-bold text-slate-700">{code}</code><button type="button" onClick={() => setBookCodes((items) => items.filter((item) => item !== code))} className="min-h-8 rounded-lg px-2 text-xs font-bold text-red-600 hover:bg-red-50">Hapus</button></div>)}</div> : <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">Belum ada buku dipindai.</div>}</div>
+        {error && <Feedback type="error">{error}</Feedback>}{result && <Feedback type="success"><p>{result.message}</p>{result.data?.fine_amount > 0 && <p className="mt-1">Denda: Rp{Number(result.data.fine_amount).toLocaleString('id-ID')}</p>}</Feedback>}
+        <button disabled={submitting || !bookCodes.length || (mode === 'borrow' && !memberCode.trim())} className="min-h-12 w-full rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-50">{submitting ? 'Memproses transaksi…' : mode === 'borrow' ? `Konfirmasi ${bookCodes.length} buku` : 'Konfirmasi pengembalian'}</button></div></Panel>
+    </form></div>
 }
+function Field({ label, value, onChange, placeholder, required }) { return <label className="block text-sm font-bold text-slate-700">{label}<input required={required} value={value} onChange={(event) => onChange(event.target.value)} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-4 font-mono text-sm" placeholder={placeholder} /></label> }
+function Step({ active, number, label }) { return <span className={`flex items-center gap-2 ${active ? 'text-blue-700' : 'text-slate-400'}`}><b className={`grid h-6 w-6 place-items-center rounded-full text-[10px] ${active ? 'bg-blue-700 text-white' : 'bg-slate-200'}`}>{active ? '✓' : number}</b>{label}</span> }
+function ScanIcon() { return <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 8V4h4m8 0h4v4m0 8v4h-4M8 20H4v-4M8 12h8" /></svg> }

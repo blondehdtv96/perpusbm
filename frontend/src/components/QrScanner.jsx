@@ -36,9 +36,9 @@ export default function QrScanner({ active, onDetected }) {
     ? error
     : 'Kamera memerlukan HTTPS pada HP. Gunakan input manual atau buka aplikasi melalui HTTPS.'
 
-  return <div className="relative overflow-hidden rounded-2xl bg-slate-950">
-    <video ref={videoRef} className="aspect-video w-full object-cover" muted playsInline />
-    <div className="pointer-events-none absolute inset-8 rounded-2xl border-2 border-emerald-400 shadow-[0_0_0_999px_rgba(0,0,0,.3)]" />
-    {displayedError && <p className="absolute inset-x-3 bottom-3 rounded-xl bg-red-950/90 p-3 text-sm text-white">{displayedError}</p>}
-  </div>
+  return <section className="overflow-hidden rounded-3xl border border-slate-800 bg-slate-950 shadow-xl">
+    <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-white"><div className="flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" /><p className="text-xs font-bold">Kamera aktif</p></div><p className="text-[10px] uppercase tracking-wider text-slate-400">Arahkan QR ke bingkai</p></div>
+    <div className="relative"><video ref={videoRef} className="aspect-video w-full object-cover" muted playsInline /><div className="pointer-events-none absolute inset-[15%] rounded-2xl border-2 border-blue-400 shadow-[0_0_0_999px_rgba(0,0,0,.35)]"><span className="absolute -left-0.5 -top-0.5 h-7 w-7 rounded-tl-xl border-l-4 border-t-4 border-white" /><span className="absolute -bottom-0.5 -right-0.5 h-7 w-7 rounded-br-xl border-b-4 border-r-4 border-white" /></div></div>
+    {displayedError ? <p role="alert" className="border-t border-red-900 bg-red-950/80 p-4 text-sm text-red-100">{displayedError}</p> : <p className="px-4 py-3 text-center text-xs text-slate-400">QR akan diproses otomatis setelah terdeteksi.</p>}
+  </section>
 }

@@ -2,12 +2,46 @@
 
 @theme {
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-navy-950: #071a35;
+  --color-navy-900: #0b2545;
+  --color-navy-800: #12365e;
+  --color-brand-blue: #155eef;
+  --color-brand-red: #dc2626;
+  /* Existing emerald utilities inherit the new school-blue identity. */
+  --color-emerald-50: #eff6ff;
+  --color-emerald-100: #dbeafe;
+  --color-emerald-200: #bfdbfe;
+  --color-emerald-300: #93c5fd;
+  --color-emerald-600: #2563eb;
+  --color-emerald-700: #1d4ed8;
+  --color-emerald-800: #1e40af;
+  --color-emerald-950: #071a35;
 }
 
 * { box-sizing: border-box; }
-html { background: #f8fafc; }
+html { background: #f8fafc; color: #0f172a; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
-button, input, textarea { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
+::selection { background: #bfdbfe; color: #071a35; }
+:focus-visible { outline: 3px solid #60a5fa; outline-offset: 2px; }
+input:focus, select:focus, textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 4px rgb(37 99 235 / .12); outline: none; }
+
+.app-scrollbar { scrollbar-width: thin; scrollbar-color: rgb(148 163 184 / .35) transparent; }
+.app-scrollbar::-webkit-scrollbar { width: 6px; }
+.app-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.app-scrollbar::-webkit-scrollbar-thumb { background: rgb(148 163 184 / .35); border-radius: 999px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
+
+@media print {
+  body * { visibility: hidden !important; }
+  #member-card, #member-card * { visibility: visible !important; }
+  #member-card { position: fixed !important; inset: 0 auto auto 0 !important; width: 100% !important; max-width: 920px !important; border-radius: 0 !important; box-shadow: none !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  #member-card .print-hidden { display: none !important; }
+  @page { size: landscape; margin: 10mm; }
+}
