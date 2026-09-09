@@ -87,6 +87,9 @@ class UserController extends Controller
             'class_or_position' => ['nullable', 'string', 'max:255'],
             'photo' => ['nullable', 'image', 'max:2048'],
         ]);
+        if ($request->user()->member_type === 'student' && $request->user()->student()->exists()) {
+            unset($data['class_or_position']);
+        }
         if ($request->hasFile('photo')) {
             $data['photo_path'] = $request->file('photo')->store('profiles', 'public');
         }
@@ -99,9 +102,24 @@ class UserController extends Controller
 
     public function card(Request $request, ?User $user = null): JsonResponse
     {
-        $member = $user ?? $request->user();
+        $member = ($user ?? $request->user())->load([
+            'libraryMember',
+            'student.currentAssignment.academicYear',
+            'student.currentAssignment.classGroup.educationLevel',
+            'student.currentAssignment.classGroup.major',
+        ]);
+        $assignment = $member->student?->currentAssignment;
+        $classGroup = $assignment?->classGroup;
 
-        return response()->json(['data' => [...$member->only('id', 'name', 'nis_nip', 'member_type', 'class_or_position', 'photo_path'), 'qr_token' => $member->member_qr_token]]);
+        return response()->json(['data' => [
+            ...$member->only('id', 'name', 'nis_nip', 'member_type', 'class_or_position', 'photo_path', 'status'),
+            'member_number' => $member->libraryMember?->member_number,
+            'member_status' => $member->libraryMember?->status ?? $member->status,
+            'class_name' => $classGroup?->display_name ?? $member->class_or_position,
+            'major' => $classGroup?->major?->name,
+            'academic_year' => $assignment?->academicYear?->name,
+            'qr_token' => $member->member_qr_token,
+        ]]);
     }
 
     public function rotateQr(Request $request, User $user): JsonResponse

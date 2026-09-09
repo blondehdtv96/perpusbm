@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\AcademicMasterController;
 use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BookController;
@@ -12,9 +13,13 @@ use App\Http\Controllers\Api\LoanPolicyController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\RolePermissionController;
+use App\Http\Controllers\Api\StudentRegistrationController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\UserImportController;
 use Illuminate\Support\Facades\Route;
+
+Route::get('/registration/options', [StudentRegistrationController::class, 'options'])->middleware('throttle:30,1');
+Route::post('/registration', [StudentRegistrationController::class, 'store'])->middleware('throttle:5,1');
 
 Route::prefix('auth')->group(function (): void {
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
@@ -32,6 +37,13 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::put('/profile', [UserController::class, 'updateProfile']);
     Route::post('/profile', [UserController::class, 'updateProfile']);
     Route::get('/profile/card', [UserController::class, 'card']);
+
+    Route::get('/academic', [AcademicMasterController::class, 'index'])->middleware('permission:academic.manage');
+    Route::post('/academic/years', [AcademicMasterController::class, 'storeYear'])->middleware('permission:academic.manage');
+    Route::post('/academic/levels', [AcademicMasterController::class, 'storeLevel'])->middleware('permission:academic.manage');
+    Route::post('/academic/majors', [AcademicMasterController::class, 'storeMajor'])->middleware('permission:academic.manage');
+    Route::post('/academic/classes', [AcademicMasterController::class, 'storeClass'])->middleware('permission:academic.manage');
+    Route::patch('/academic/{type}/{id}/toggle', [AcademicMasterController::class, 'toggle'])->middleware('permission:academic.manage');
 
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
     Route::post('/users', [UserController::class, 'store'])->middleware('permission:users.create');
