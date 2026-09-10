@@ -168,24 +168,66 @@ Pada development gunakan `php artisan schedule:work`. Pada production jalankan `
 
 ## Konfigurasi penting
 
-Jangan commit file `.env`. Gunakan `backend/.env.example` dan `frontend/.env.example` sebagai referensi. Konfigurasi penting meliputi:
+Jangan commit file `.env`. Gunakan `backend/.env.example` dan `frontend/.env.example` sebagai referensi.
 
-- `APP_URL`, `FRONTEND_URL`, dan `SANCTUM_STATEFUL_DOMAINS`.
-- `DB_*`, `SESSION_*`, `CACHE_STORE`, dan `QUEUE_CONNECTION`.
-- `MAIL_*` untuk pengiriman email.
-- `SEED_ADMIN_PASSWORD` untuk akun administrator awal.
-- `VITE_API_URL` untuk alamat API frontend.
+Aplikasi menggunakan **Sanctum SPA cookie authentication**. Seluruh route API selalu memakai cookie terenkripsi, session, dan CSRF; karena itu `SESSION_DRIVER=database` membutuhkan tabel `sessions` dan setiap request mutasi harus memperoleh cookie dari `/sanctum/csrf-cookie` terlebih dahulu.
 
-## Checklist deployment
+Untuk production HTTPS satu origin atau subdomain dalam site yang sama:
 
-- Gunakan `APP_ENV=production` dan `APP_DEBUG=false`.
-- Buat `APP_KEY` unik dan gunakan kredensial database yang aman.
-- Ganti password akun seed dan jangan gunakan kredensial development.
-- Konfigurasikan HTTPS, cookie session, CORS, dan domain Sanctum dengan benar.
-- Jalankan `php artisan migrate --force`, queue worker, dan scheduler.
-- Arahkan document root web server ke `backend/public`.
-- Build frontend menggunakan `npm ci` dan `npm run build`.
-- Pastikan folder `storage` dan `bootstrap/cache` dapat ditulis oleh web server.
+```dotenv
+APP_ENV=production
+APP_DEBUG=false
+APP_URL=https://api.example.sch.id
+FRONTEND_URL=https://library.example.sch.id
+CORS_ALLOWED_ORIGINS=https://library.example.sch.id
+SESSION_DRIVER=database
+SESSION_DOMAIN=.example.sch.id
+SESSION_SECURE_COOKIE=true
+SESSION_HTTP_ONLY=true
+SESSION_SAME_SITE=lax
+```
+
+Gunakan origin lengkap tanpa trailing slash pada `CORS_ALLOWED_ORIGINS`. Jika frontend dan backend benar-benar cross-site, gunakan `SESSION_SAME_SITE=none` dan tetap wajib memakai HTTPS serta `SESSION_SECURE_COOKIE=true`. Jika frontend dilayani satu origin dengan Laravel melalui reverse proxy, biarkan `VITE_API_URL` kosong. Jika berbeda origin, isi `VITE_API_URL` **sebelum** `npm run build` karena nilainya ditanam saat proses build.
+
+Jangan menjalankan `php artisan key:generate` ulang pada production yang sudah memiliki data; perubahan `APP_KEY` akan membatalkan cookie dan data terenkripsi.
+
+## Deployment production
+
+Dari folder `backend`, jalankan secara berurutan setelah source code dan `.env` production tersedia:
+
+```cmd
+composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+php artisan optimize:clear
+php artisan migrate:status
+php artisan migrate --force
+php artisan storage:link
+php artisan config:cache
+php artisan route:cache
+php artisan event:cache
+php artisan queue:restart
+```
+
+Migration `2026_09_10_000007_ensure_sessions_table_exists.php` memastikan instalasi lama juga mempunyai tabel `sessions` tanpa menghapus data yang sudah ada. Jangan menggunakan `migrate:fresh`, `migrate:reset`, atau rollback pada database production.
+
+Build frontend setelah menetapkan `VITE_API_URL` sesuai topologi server:
+
+```cmd
+cd frontend
+npm ci
+npm run build
+```
+
+Deploy isi `frontend/dist` dan aktifkan SPA fallback ke `index.html`. Proxy development di `vite.config.js` tidak ikut masuk ke build production; web server production harus meneruskan `/api`, `/sanctum`, dan `/storage` ke Laravel jika memakai pola same-origin.
+
+Checklist server:
+
+- Arahkan document root backend ke `backend/public`, bukan root proyek.
+- Pastikan `storage` dan `bootstrap/cache` dapat ditulis oleh user web server.
+- Pastikan tabel `sessions`, `cache`, `jobs`, dan tabel aplikasi tersedia setelah migration.
+- Gunakan HTTPS dan jangan memakai kredensial database atau password seed development.
+- Jalankan queue worker melalui service manager dan `php artisan schedule:run` setiap menit.
+- Periksa `/up`, lalu uji `/sanctum/csrf-cookie` → login → `/api/auth/me` melalui domain HTTPS production.
+- Jika masih 500, periksa `backend/storage/logs/laravel.log` setelah request terbaru; jangan aktifkan `APP_DEBUG=true` pada server publik.
 
 ## Status implementasi
 
