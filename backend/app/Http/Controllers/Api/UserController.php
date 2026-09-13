@@ -5,11 +5,15 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Services\ActivityLogger;
+use App\Services\QrCodeService;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\Response;
 
 class UserController extends Controller
 {
@@ -19,7 +23,7 @@ class UserController extends Controller
             ->when($request->string('search')->toString(), function ($query, string $search): void {
                 $query->where(fn ($q) => $q->where('name', 'like', "%{$search}%")
                     ->orWhere('username', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%")->orWhere('nis_nip', 'like', "%{$search}%"));
+                    ->orWhere('nis_nip', 'like', "%{$search}%"));
             })
             ->when($request->string('member_type')->toString(), fn ($q, $type) => $q->where('member_type', $type))
             ->when($request->string('status')->toString(), fn ($q, $status) => $q->where('status', $status))
@@ -39,7 +43,7 @@ class UserController extends Controller
 
             return $user;
         });
-        ActivityLogger::log($request, 'user.created', $user, $user->only('name', 'username', 'email', 'member_type', 'status'));
+        ActivityLogger::log($request, 'user.created', $user, $user->only('name', 'username', 'member_type', 'status'));
 
         return response()->json(['data' => $user->load('roles:id,name')], 201);
     }
@@ -59,7 +63,7 @@ class UserController extends Controller
         }
         $user->update($data);
         $user->syncRoles([$role]);
-        ActivityLogger::log($request, 'user.updated', $user, $user->only('name', 'username', 'email', 'member_type', 'status'));
+        ActivityLogger::log($request, 'user.updated', $user, $user->only('name', 'username', 'member_type', 'status'));
 
         return response()->json(['data' => $user->fresh()->load('roles:id,name')]);
     }
@@ -83,7 +87,6 @@ class UserController extends Controller
     {
         $data = $request->validate([
             'name' => ['sometimes', 'string', 'max:255'],
-            'phone' => ['nullable', 'string', 'max:30'],
             'class_or_position' => ['nullable', 'string', 'max:255'],
             'photo' => ['nullable', 'image', 'max:2048'],
         ]);
@@ -102,24 +105,36 @@ class UserController extends Controller
 
     public function card(Request $request, ?User $user = null): JsonResponse
     {
-        $member = ($user ?? $request->user())->load([
-            'libraryMember',
-            'student.currentAssignment.academicYear',
-            'student.currentAssignment.classGroup.educationLevel',
-            'student.currentAssignment.classGroup.major',
-        ]);
-        $assignment = $member->student?->currentAssignment;
-        $classGroup = $assignment?->classGroup;
+        $member = ($user ?? $request->user())->load($this->cardRelations());
 
-        return response()->json(['data' => [
-            ...$member->only('id', 'name', 'nis_nip', 'member_type', 'class_or_position', 'photo_path', 'status'),
-            'member_number' => $member->libraryMember?->member_number,
-            'member_status' => $member->libraryMember?->status ?? $member->status,
-            'class_name' => $classGroup?->display_name ?? $member->class_or_position,
-            'major' => $classGroup?->major?->name,
-            'academic_year' => $assignment?->academicYear?->name,
-            'qr_token' => $member->member_qr_token,
-        ]]);
+        return response()->json(['data' => $this->cardPayload($member)]);
+    }
+
+    public function printCards(Request $request, QrCodeService $qr): Response
+    {
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1', 'max:100'],
+            'ids.*' => ['integer', 'distinct', Rule::exists('users', 'id')->whereNull('deleted_at')],
+        ]);
+        $members = User::query()
+            ->with($this->cardRelations())
+            ->whereIn('id', $data['ids'])
+            ->get()
+            ->keyBy('id');
+        $cards = collect($data['ids'])->map(function (int $id) use ($members, $qr): array {
+            $member = $members->get($id);
+
+            return [
+                ...$this->cardPayload($member),
+                'qr_image' => $qr->dataUri((string) $member->member_qr_token, 180),
+                'photo_image' => $this->photoDataUri($member->photo_path),
+            ];
+        });
+        ActivityLogger::log($request, 'users.cards_exported', null, ['count' => $cards->count()]);
+
+        return Pdf::loadView('pdf.member-cards', compact('cards'))
+            ->setPaper('a4', 'portrait')
+            ->download('kartu-anggota-'.now()->format('Ymd-His').'.pdf');
     }
 
     public function rotateQr(Request $request, User $user): JsonResponse
@@ -130,16 +145,62 @@ class UserController extends Controller
         return response()->json(['message' => 'QR anggota berhasil diperbarui.', 'data' => ['qr_token' => $user->member_qr_token]]);
     }
 
+    private function cardRelations(): array
+    {
+        return [
+            'libraryMember',
+            'student.currentAssignment.academicYear',
+            'student.currentAssignment.classGroup.educationLevel',
+            'student.currentAssignment.classGroup.major',
+        ];
+    }
+
+    private function cardPayload(User $member): array
+    {
+        $assignment = $member->student?->currentAssignment;
+        $classGroup = $assignment?->classGroup;
+
+        return [
+            ...$member->only('id', 'name', 'nis_nip', 'member_type', 'class_or_position', 'photo_path', 'status'),
+            'member_number' => $member->libraryMember?->member_number,
+            'member_status' => $member->libraryMember?->status ?? $member->status,
+            'class_name' => $classGroup?->display_name ?? $member->class_or_position,
+            'major' => $classGroup?->major?->name,
+            'academic_year' => $assignment?->academicYear?->name,
+            'qr_token' => $member->member_qr_token,
+        ];
+    }
+
+    private function photoDataUri(?string $path): ?string
+    {
+        if (! $path) {
+            return null;
+        }
+
+        try {
+            $disk = Storage::disk('public');
+            if (! $disk->exists($path)) {
+                return null;
+            }
+            $mime = $disk->mimeType($path);
+            if (! is_string($mime) || ! str_starts_with($mime, 'image/')) {
+                return null;
+            }
+
+            return "data:{$mime};base64,".base64_encode($disk->get($path));
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     private function validated(Request $request, ?User $user = null): array
     {
         return $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/', Rule::unique('users')->ignore($user)],
-            'email' => ['required', 'email', 'max:255', Rule::unique('users')->ignore($user)],
             'password' => [$user ? 'nullable' : 'required', 'string', 'min:8'],
             'nis_nip' => ['nullable', 'string', 'max:100', Rule::unique('users')->ignore($user)],
             'member_type' => ['required', Rule::in(['student', 'staff'])],
-            'phone' => ['nullable', 'string', 'max:30'],
             'class_or_position' => ['nullable', 'string', 'max:255'],
             'status' => ['required', Rule::in(['active', 'suspended', 'inactive'])],
             'role' => ['required', Rule::in(['super_admin', 'librarian', 'staff', 'student'])],

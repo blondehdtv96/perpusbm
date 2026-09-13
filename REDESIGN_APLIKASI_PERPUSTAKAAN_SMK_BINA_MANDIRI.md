@@ -17,7 +17,7 @@ Redesign dilakukan untuk menghasilkan aplikasi perpustakaan yang:
 - Responsive pada desktop, tablet, dan smartphone
 - Memiliki alur pendaftaran siswa yang sederhana
 - Menggunakan NIS sebagai username
-- Menggunakan nomor HP sebagai password awal
+- Mewajibkan siswa membuat password minimal 8 karakter saat registrasi
 - Otomatis membuat data anggota perpustakaan setelah siswa mendaftar
 - Memiliki kartu perpustakaan digital
 - Mendukung QR Code untuk identifikasi anggota dan buku
@@ -144,8 +144,8 @@ Form:
 - Tingkatan
 - Jurusan
 - Kelas
-- Nomor HP
 - Password
+- Konfirmasi Password
 
 ### Aturan Username
 
@@ -157,7 +157,6 @@ Contoh:
 Nama     : Ahmad Fauzan
 NIS      : 202600123
 Kelas    : 10 TKJ A
-No HP    : 081234567890
 ```
 
 Username:
@@ -166,13 +165,7 @@ Username:
 202600123
 ```
 
-Password awal:
-
-```text
-081234567890
-```
-
-Password harus disimpan menggunakan hashing.
+Siswa wajib membuat password minimal 8 karakter dan mengonfirmasinya saat registrasi.
 
 NIS wajib unik.
 
@@ -712,10 +705,10 @@ Tampilkan:
 
 Admin dapat import Excel/CSV.
 
-Format:
+Format enam kolom (nama dan urutan harus tetap):
 
 ```text
-Nama | NIS | Tingkat | Jurusan | Kelas | No HP
+name | username | nis_nip | member_type | class_or_position | password
 ```
 
 Sistem:
@@ -737,7 +730,7 @@ Admin dapat:
 
 - Tambah user
 - Edit user
-- Reset password
+- Ubah password
 - Aktif/nonaktif
 - Hapus user
 - Cari user
@@ -827,7 +820,7 @@ Catat aktivitas penting:
 - Peminjaman
 - Pengembalian
 - Perubahan data
-- Reset password
+- Perubahan password
 
 Data:
 

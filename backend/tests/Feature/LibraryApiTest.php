@@ -28,9 +28,15 @@ class LibraryApiTest extends TestCase
 
         $response->assertOk()
             ->assertJsonPath('data.user.username', 'admin')
-            ->assertJsonPath('data.user.email', 'admin@bmlibrary.local')
+            ->assertJsonMissingPath('data.user.email')
+            ->assertJsonMissingPath('data.user.email_verified_at')
+            ->assertJsonMissingPath('data.user.phone')
             ->assertJsonPath('data.roles.0', 'super_admin');
-        $this->getJson('/api/auth/me')->assertOk();
+        $this->getJson('/api/auth/me')
+            ->assertOk()
+            ->assertJsonMissingPath('data.user.email')
+            ->assertJsonMissingPath('data.user.email_verified_at')
+            ->assertJsonMissingPath('data.user.phone');
     }
 
     public function test_borrow_is_atomic_and_idempotent(): void
@@ -72,7 +78,7 @@ class LibraryApiTest extends TestCase
     private function libraryFixture(): array
     {
         $this->seed();
-        $admin = User::where('email', 'admin@bmlibrary.local')->firstOrFail();
+        $admin = User::where('username', 'admin')->firstOrFail();
         $member = User::factory()->create(['status' => 'active']);
         $member->assignRole('student');
         $book = Book::create(['title' => 'Bumi Manusia', 'author' => 'Pramoedya Ananta Toer']);

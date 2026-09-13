@@ -23,8 +23,6 @@ Route::post('/registration', [StudentRegistrationController::class, 'store'])->m
 
 Route::prefix('auth')->group(function (): void {
     Route::post('/login', [AuthController::class, 'login']);
-    Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
-    Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:5,1');
     Route::middleware('auth:sanctum')->group(function (): void {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
@@ -43,10 +41,13 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/academic/levels', [AcademicMasterController::class, 'storeLevel'])->middleware('permission:academic.manage');
     Route::post('/academic/majors', [AcademicMasterController::class, 'storeMajor'])->middleware('permission:academic.manage');
     Route::post('/academic/classes', [AcademicMasterController::class, 'storeClass'])->middleware('permission:academic.manage');
+    Route::put('/academic/classes/{classGroup}', [AcademicMasterController::class, 'updateClass'])->middleware('permission:academic.manage');
+    Route::delete('/academic/classes/{classGroup}', [AcademicMasterController::class, 'destroyClass'])->middleware('permission:academic.manage');
     Route::patch('/academic/{type}/{id}/toggle', [AcademicMasterController::class, 'toggle'])->middleware('permission:academic.manage');
 
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
     Route::post('/users', [UserController::class, 'store'])->middleware('permission:users.create');
+    Route::post('/users/cards/print', [UserController::class, 'printCards'])->middleware('permission:users.view');
     Route::get('/users/{user}', [UserController::class, 'show'])->middleware('permission:users.view');
     Route::put('/users/{user}', [UserController::class, 'update'])->middleware('permission:users.update');
     Route::delete('/users/{user}', [UserController::class, 'destroy'])->middleware('permission:users.delete');

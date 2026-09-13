@@ -40,13 +40,14 @@ export default function InventoryPage() {
   const [editingCopy, setEditingCopy] = useState(null)
   const [editForm, setEditForm] = useState({ inventory_code: '', shelf_location: '', status: 'available', condition_notes: '' })
   const [savingCopy, setSavingCopy] = useState(false)
+  const [creatingBook, setCreatingBook] = useState(false)
   const [editError, setEditError] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
   const loadReferences = useCallback(async () => {
     try {
-      const [categoryResponse, bookResponse] = await Promise.all([api('/api/categories'), api('/api/books?per_page=100')])
+      const [categoryResponse, bookResponse] = await Promise.all([api('/api/categories'), api('/api/books?per_page=100&include_copies=0')])
       setCategories(categoryResponse.data ?? [])
       setBooks(bookResponse.data ?? [])
     } catch (reason) {
@@ -111,6 +112,10 @@ export default function InventoryPage() {
 
   const createBook = async (event) => {
     event.preventDefault()
+    if (creatingBook) return
+    setCreatingBook(true)
+    setError('')
+    setMessage('')
     try {
       const body = new FormData()
       Object.entries(book).forEach(([key, value]) => body.append(key, value))
@@ -120,7 +125,11 @@ export default function InventoryPage() {
       setCover(null)
       setMessage('Buku dan eksemplarnya berhasil ditambahkan.')
       refresh()
-    } catch (reason) { setError(reason.message) }
+    } catch (reason) {
+      setError(reason.message)
+    } finally {
+      setCreatingBook(false)
+    }
   }
 
   const removeBook = async (item) => {
@@ -199,7 +208,7 @@ export default function InventoryPage() {
     {error && <Feedback type="error">{error}</Feedback>}
     <div className="grid gap-5 xl:grid-cols-[1fr_2fr]">
       <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Kategori</h2><form onSubmit={createCategory} className="mt-3 flex gap-2"><input required value={categoryName} onChange={(e) => setCategoryName(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-slate-300 px-3" placeholder="Nama kategori" /><button className="rounded-xl bg-navy-950 px-4 font-bold text-white hover:bg-navy-900">Tambah</button></form><div className="mt-4 flex flex-wrap gap-2">{categories.map((item) => <span key={item.id} className="rounded-full bg-slate-100 px-3 py-2 text-xs font-bold">{item.name} ({item.books_count})</span>)}</div></section>
-      <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Tambah buku</h2><form onSubmit={createBook} className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{['title', 'author', 'publisher', 'isbn', 'shelf_location'].map((field) => <input key={field} required={['title', 'author'].includes(field)} value={book[field]} onChange={(e) => setBook({ ...book, [field]: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3" placeholder={field.replace('_', ' ')} />)}<select value={book.book_category_id} onChange={(e) => setBook({ ...book, book_category_id: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3"><option value="">Tanpa kategori</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><input type="number" min="0" max="100" value={book.copies} onChange={(e) => setBook({ ...book, copies: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3" placeholder="Jumlah eksemplar" /><label className="flex min-h-11 cursor-pointer items-center rounded-xl border border-slate-300 px-3 text-sm text-slate-500">{cover ? cover.name : 'Pilih cover'}<input type="file" accept="image/*" onChange={(e) => setCover(e.target.files?.[0] ?? null)} className="sr-only" /></label><button className="min-h-11 rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800">Simpan buku</button></form></section>
+      <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Tambah buku</h2><form onSubmit={createBook} className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{['title', 'author', 'publisher', 'isbn', 'shelf_location'].map((field) => <input key={field} required={['title', 'author'].includes(field)} value={book[field]} onChange={(e) => setBook({ ...book, [field]: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3" placeholder={field.replace('_', ' ')} />)}<select value={book.book_category_id} onChange={(e) => setBook({ ...book, book_category_id: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3"><option value="">Tanpa kategori</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label className="text-sm font-bold text-slate-700">Jumlah eksemplar<input required type="number" min="0" max="10000" step="1" value={book.copies} onChange={(e) => setBook({ ...book, copies: e.target.value })} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-300 px-3 font-normal" /><small className="mt-1 block font-normal text-slate-500">Masukkan bilangan bulat 0–10.000 eksemplar.</small></label><label className="flex min-h-11 cursor-pointer items-center rounded-xl border border-slate-300 px-3 text-sm text-slate-500">{cover ? cover.name : 'Pilih cover'}<input type="file" accept="image/*" onChange={(e) => setCover(e.target.files?.[0] ?? null)} className="sr-only" /></label><button disabled={creatingBook} className="min-h-11 rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60">{creatingBook ? 'Menyimpan buku…' : 'Simpan buku'}</button></form></section>
     </div>
 
     <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Judul buku</h2><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{books.map((item) => <article key={item.id} className="rounded-2xl bg-slate-50 p-4"><p className="font-black">{item.title}</p><p className="text-sm text-slate-500">{item.author}</p><p className="mt-3 text-xs font-bold text-emerald-700">{item.available_copies_count}/{item.copies_count} tersedia</p><button onClick={() => removeBook(item)} className="mt-3 text-xs font-bold text-red-600">Hapus judul</button></article>)}</div></section>

@@ -28,17 +28,17 @@ class MvpModulesTest extends TestCase
     public function test_csv_import_reports_success_and_invalid_rows(): void
     {
         $this->seed();
-        $admin = User::where('email', 'admin@bmlibrary.local')->firstOrFail();
-        $csv = "name,username,email,nis_nip,member_type,class_or_position,phone,password\n".
-            "Siswa Valid,siswa.valid,valid@example.com,1001,student,X IPA 1,0812,password123\n".
-            "Siswa Rusak,siswa.rusak,bukan-email,1002,student,X IPA 1,0813,password123\n";
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $csv = "name,username,nis_nip,member_type,class_or_position,password\n".
+            "Siswa Valid,siswa.valid,1001,student,X IPA 1,password123\n".
+            "Siswa Rusak,siswa.rusak,1002,student,X IPA 1,pendek\n";
 
         $response = $this->actingAs($admin)->post('/api/imports/users', [
             'file' => UploadedFile::fake()->createWithContent('anggota.csv', $csv),
         ], ['Accept' => 'application/json']);
 
         $response->assertCreated()->assertJsonPath('data.success_rows', 1)->assertJsonPath('data.failed_rows', 1);
-        $this->assertDatabaseHas('users', ['username' => 'siswa.valid', 'email' => 'valid@example.com', 'member_type' => 'student']);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.valid', 'member_type' => 'student']);
         $this->assertDatabaseCount('import_failures', 1);
     }
 
@@ -80,7 +80,7 @@ class MvpModulesTest extends TestCase
     private function fixture(): array
     {
         $this->seed();
-        $admin = User::where('email', 'admin@bmlibrary.local')->firstOrFail();
+        $admin = User::where('username', 'admin')->firstOrFail();
         $member = User::factory()->create(['status' => 'active', 'member_type' => 'student', 'nis_nip' => 'MEMBER-001']);
         $member->assignRole('student');
         $book = Book::create(['title' => 'Laskar Pelangi', 'author' => 'Andrea Hirata']);

@@ -39,8 +39,8 @@ Istilah role distandarkan menjadi `super_admin`, `librarian`, `staff`, dan `stud
 ## 4. Ruang Lingkup
 
 ### MVP (wajib)
-1. Autentikasi Sanctum, lupa/reset password, dan RBAC granular.
-2. CRUD serta impor CSV/XLSX pengguna dengan validasi dan laporan kegagalan baris.
+1. Autentikasi Sanctum berbasis username dan RBAC granular.
+2. CRUD serta impor CSV/XLSX pengguna dengan enam kolom `name`, `username`, `nis_nip`, `member_type`, `class_or_position`, dan `password`, termasuk validasi dan laporan kegagalan baris.
 3. Profil dan kartu anggota digital dengan QR token acak.
 4. CRUD kategori, judul buku, dan eksemplar fisik.
 5. QR unik per eksemplar, lokasi rak, status, dan cetak label PDF.
@@ -121,7 +121,7 @@ Penghapusan pengguna, judul, atau eksemplar yang sudah memiliki histori dilakuka
 
 ## 9. Model Data Konseptual
 
-- `users`: identitas, email, password, NIS/NIP, tipe anggota, kelas/jabatan, kontak, foto, status, member QR token.
+- `users`: identitas, username, password, NIS/NIP, tipe anggota, kelas/jabatan, foto, status, dan member QR token.
 - `roles`, `permissions`, tabel pivot Spatie: otorisasi granular.
 - `book_categories`: klasifikasi katalog.
 - `books`: metadata bibliografis tanpa stok manual.
@@ -130,7 +130,7 @@ Penghapusan pengguna, judul, atau eksemplar yang sudah memiliki histori dilakuka
 - `fines`: nilai denda, nilai terbayar, status, alasan waiver.
 - `fine_payments`: nominal, metode, petugas, waktu, referensi/reversal.
 - `loan_policies`: batas jumlah, durasi, tarif, ambang blokir per tipe anggota.
-- `notifications`: notifikasi in-app/email dan status baca/kirim.
+- `notifications`: notifikasi in-app dan status baca/kirim.
 - `activity_logs`: aktor, aksi, subject, perubahan sebelum/sesudah, IP, waktu.
 - `import_jobs` dan `import_failures`: hasil impor serta error per baris.
 - `idempotency_keys`: identitas request kritis dan respons tersimpan sementara.
@@ -147,7 +147,7 @@ Laravel 12 REST API
         ├── Catalog & Inventory
         ├── Circulation Service
         ├── Reporting
-        ├── Queue/Scheduler → email & reminder H-1
+        ├── Queue/Scheduler → reminder H-1 in-app
         └── Storage → cover, foto, PDF label
                │
              MySQL 8
@@ -170,7 +170,7 @@ Layar scan wajib memiliki izin kamera, pemilih kamera, bingkai scan, bunyi/getar
 
 ## 12. Kelompok API
 
-- `/auth`: login, logout, me, forgot/reset password.
+- `/auth`: login, logout, dan me.
 - `/users`, `/roles`, `/permissions`: pengguna dan otorisasi.
 - `/imports/users`: unggah, preview/validasi, konfirmasi, hasil.
 - `/categories`, `/books`, `/book-copies`: katalog dan inventaris.
@@ -225,7 +225,7 @@ Semua daftar memakai pagination, pencarian, filter, dan sorting yang dibatasi. R
 5. Apakah perpanjangan, buku rusak/hilang, dan reservasi masuk MVP?
 6. Apakah grafik kunjungan membutuhkan check-in pengunjung? Jika tidak, metrik diganti menjadi aktivitas sirkulasi.
 7. Berapa skala target pengguna, judul, eksemplar, dan transaksi harian?
-8. Kanal notifikasi wajib: in-app saja, email, atau WhatsApp?
+8. Kanal notifikasi wajib: in-app saja atau WhatsApp?
 9. Apakah deployment frontend/API satu domain atau berbeda domain?
 10. Siapa yang berwenang melakukan waiver/koreksi denda dan transaksi?
 
@@ -248,13 +248,13 @@ Dokumen ini menjadi konsep produk dan dasar penyusunan artefak lanjutan: require
 
 MVP telah selesai diimplementasikan pada workspace ini dengan cakupan:
 
-- Auth Sanctum, reset password, RBAC empat role, dan matriks permission yang dapat dikelola.
+- Auth Sanctum berbasis username, RBAC empat role, dan matriks permission yang dapat dikelola.
 - CRUD pengguna, profil/foto, kartu anggota QR, rotasi token, serta impor CSV/XLSX dengan laporan kegagalan baris.
 - CRUD kategori, buku/cover, eksemplar, lokasi/status, QR unik, lookup kode, dan label PDF.
 - Scanner kamera browser, fallback NIS/NIP/kode inventaris, transaksi atomik, row locking, dan idempotensi bertanda fingerprint.
 - Peminjaman, pengembalian, histori, denda, pembayaran parsial/lunas, waiver, dan ledger pembayaran.
 - Dashboard sesuai role, rekomendasi, statistik buku populer, dan aktivitas enam bulan.
-- Notifikasi database/email H-1, scheduler status overdue, audit log append-only, dan pembersihan idempotency key.
+- Notifikasi database H-1, scheduler status overdue, audit log append-only, dan pembersihan idempotency key.
 - Laporan sirkulasi, denda, dan inventaris dalam CSV, XLSX, serta PDF.
 - Pengaturan kebijakan per tipe anggota, portal anggota, route guard, mobile bottom navigation, dan admin sidebar.
 

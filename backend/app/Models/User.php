@@ -17,11 +17,11 @@ class User extends Authenticatable
     use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
 
     protected $fillable = [
-        'name', 'username', 'email', 'password', 'nis_nip', 'member_type', 'phone',
+        'name', 'username', 'password', 'nis_nip', 'member_type',
         'class_or_position', 'photo_path', 'status',
     ];
 
-    protected $hidden = ['password', 'remember_token', 'member_qr_token'];
+    protected $hidden = ['email', 'email_verified_at', 'phone', 'password', 'remember_token', 'member_qr_token'];
 
     protected function casts(): array
     {

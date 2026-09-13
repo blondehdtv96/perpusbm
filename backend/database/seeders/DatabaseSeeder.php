@@ -59,7 +59,7 @@ class DatabaseSeeder extends Seeder
         LoanPolicy::updateOrCreate(['member_type' => 'student'], ['max_books' => 2, 'loan_days' => 7, 'fine_per_day' => 1000, 'fine_block_threshold' => 50000]);
         LoanPolicy::updateOrCreate(['member_type' => 'staff'], ['max_books' => 5, 'loan_days' => 14, 'fine_per_day' => 1000, 'fine_block_threshold' => 100000]);
 
-        $admin = User::updateOrCreate(['email' => 'admin@bmlibrary.local'], ['name' => 'Super Admin', 'username' => 'admin', 'password' => Hash::make(env('SEED_ADMIN_PASSWORD', 'ChangeMeNow!')), 'member_type' => 'staff', 'status' => 'active']);
+        $admin = User::updateOrCreate(['username' => 'admin'], ['name' => 'Super Admin', 'password' => Hash::make(env('SEED_ADMIN_PASSWORD', 'ChangeMeNow!')), 'member_type' => 'staff', 'status' => 'active']);
         $admin->syncRoles([$superAdmin]);
     }
 }

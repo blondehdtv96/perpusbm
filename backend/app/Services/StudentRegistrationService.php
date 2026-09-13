@@ -21,18 +21,11 @@ class StudentRegistrationService
             ->findOrFail($data['class_group_id']);
 
         return DB::transaction(function () use ($data, $classGroup): User {
-            $password = $data['password'] ?? $data['phone'];
-            $email = filled($data['email'] ?? null)
-                ? $data['email']
-                : "{$data['nis']}@siswa.bmlibrary.local";
-
             $user = User::create([
                 'name' => $data['name'],
                 'username' => $data['nis'],
-                'email' => $email,
-                'password' => $password,
+                'password' => $data['password'],
                 'nis_nip' => $data['nis'],
-                'phone' => $data['phone'],
                 'member_type' => 'student',
                 'class_or_position' => $classGroup->display_name,
                 'status' => 'active',

@@ -9,16 +9,22 @@ use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Throwable;
 
 class BookController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $copyLoader = $this->copyLoader($request->user()->can('loans.view-all'));
+        $relations = ['category:id,name'];
+        if ($request->boolean('include_copies', true)) {
+            $relations['copies'] = $this->copyLoader($request->user()->can('loans.view-all'));
+        }
+
         $books = Book::query()
-            ->with(['category:id,name', 'copies' => $copyLoader])
+            ->with($relations)
             ->withCount([
                 'copies',
                 'copies as available_copies_count' => fn ($query) => $query
@@ -35,7 +41,7 @@ class BookController extends Controller
             })
             ->when($request->integer('category_id'), fn ($query, int $id) => $query->where('book_category_id', $id))
             ->latest()
-            ->paginate(min($request->integer('per_page', 12), 50));
+            ->paginate(min($request->integer('per_page', 12), 100));
 
         return response()->json($books);
     }
@@ -82,35 +88,64 @@ class BookController extends Controller
             'isbn' => ['nullable', 'string', 'max:32', 'unique:books,isbn'],
             'description' => ['nullable', 'string'],
             'cover' => ['nullable', 'image', 'max:2048'],
-            'copies' => ['nullable', 'integer', 'min:0', 'max:100'],
+            'copies' => ['nullable', 'integer', 'min:0', 'max:10000'],
             'shelf_location' => ['nullable', 'string', 'max:100'],
         ]);
 
         $copyCount = (int) ($data['copies'] ?? 0);
         $shelf = $data['shelf_location'] ?? null;
+        $coverPath = null;
         if ($request->hasFile('cover')) {
-            $data['cover_path'] = $request->file('cover')->store('covers', 'public');
+            $coverPath = $request->file('cover')->store('covers', 'public');
+            $data['cover_path'] = $coverPath;
         }
         unset($data['copies'], $data['shelf_location'], $data['cover']);
 
-        $book = DB::transaction(function () use ($data, $copyCount, $shelf): Book {
-            $book = Book::create($data);
+        try {
+            $book = DB::transaction(function () use ($data, $copyCount, $shelf): Book {
+                $book = Book::create($data);
+                $timestamp = now();
+                $rows = [];
 
-            for ($sequence = 1; $sequence <= $copyCount; $sequence++) {
-                $book->copies()->create([
-                    'inventory_code' => sprintf('BK-%06d-%03d', $book->id, $sequence),
-                    'qr_token' => Str::random(64),
-                    'status' => 'available',
-                    'shelf_location' => $shelf,
-                ]);
+                for ($sequence = 1; $sequence <= $copyCount; $sequence++) {
+                    $rows[] = [
+                        'book_id' => $book->id,
+                        'inventory_code' => sprintf('BK-%06d-%03d', $book->id, $sequence),
+                        'qr_token' => Str::random(64),
+                        'status' => 'available',
+                        'shelf_location' => $shelf,
+                        'created_at' => $timestamp,
+                        'updated_at' => $timestamp,
+                    ];
+
+                    if (count($rows) === 500) {
+                        DB::table('book_copies')->insert($rows);
+                        $rows = [];
+                    }
+                }
+
+                if ($rows !== []) {
+                    DB::table('book_copies')->insert($rows);
+                }
+
+                return $book;
+            });
+        } catch (Throwable $exception) {
+            if ($coverPath) {
+                Storage::disk('public')->delete($coverPath);
             }
 
-            return $book;
-        });
+            throw $exception;
+        }
 
-        ActivityLogger::log($request, 'book.created', $book, $book->only('title', 'author', 'isbn'));
+        ActivityLogger::log($request, 'book.created', $book, [
+            ...$book->only('title', 'author', 'isbn'),
+            'copies_created' => $copyCount,
+        ]);
 
-        return response()->json(['data' => $book->load('copies')], 201);
+        $book->load('category:id,name')->loadCount(['copies', 'copies as available_copies_count' => fn ($query) => $query->where('status', 'available')]);
+
+        return response()->json(['data' => $book], 201);
     }
 
     public function update(Request $request, Book $book): JsonResponse

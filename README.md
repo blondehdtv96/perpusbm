@@ -6,7 +6,7 @@ BM Library adalah aplikasi manajemen perpustakaan **mobile-first** untuk mengelo
 
 - Autentikasi berbasis Laravel Sanctum dan session SPA.
 - RBAC granular untuk `super_admin`, `librarian`, `staff`, dan `student`.
-- Pengelolaan anggota, profil, status akun, serta impor CSV/XLSX.
+- Pengelolaan anggota, profil, status akun, serta impor CSV/XLSX enam kolom: `name`, `username`, `nis_nip`, `member_type`, `class_or_position`, dan `password`.
 - Template impor XLSX dengan petunjuk, contoh, dan dropdown tipe anggota.
 - Kategori, katalog, cover buku, eksemplar, lokasi rak, dan status ketersediaan.
 - QR anggota dan eksemplar, label PDF, scanner kamera, serta input kode manual.
@@ -109,7 +109,6 @@ Seeder membuat akun berikut:
 | Field | Nilai |
 | --- | --- |
 | Username | `admin` |
-| Email | `admin@bmlibrary.local` |
 | Role | `super_admin` |
 | Password | Nilai `SEED_ADMIN_PASSWORD` |
 

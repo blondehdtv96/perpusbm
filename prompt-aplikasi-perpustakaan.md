@@ -14,7 +14,7 @@ Buatkan aplikasi manajemen perpustakaan sekolah/kampus yang **mobile-first**, de
 | Database | MySQL 8.x |
 | QR/Barcode | `simple-qrcode` (Laravel, generate) + `html5-qrcode` atau `react-qr-reader` (React, scan via kamera HP) |
 | Autentikasi | Laravel Sanctum (SPA token-based), middleware RBAC custom (Spatie `laravel-permission` disarankan) |
-| Notifikasi | Laravel Notification (email/WhatsApp gateway opsional) untuk reminder jatuh tempo |
+| Notifikasi | Laravel Notification (in-app) untuk reminder jatuh tempo |
 | File storage | Laravel Storage (cover buku, foto profil) |
 
 ---
@@ -31,9 +31,10 @@ Buatkan aplikasi manajemen perpustakaan sekolah/kampus yang **mobile-first**, de
 ### B. Manajemen User
 - CRUD user (admin only)
 - Import user massal via Excel/CSV (khusus siswa per angkatan/kelas)
-- Profil user: foto, NIS/NIP, kelas/jabatan, kontak
+- Profil user: foto, NIS/NIP, dan kelas/jabatan
+- Import user memakai enam kolom: `name`, `username`, `nis_nip`, `member_type`, `class_or_position`, `password`
 - Setiap user otomatis mendapat **kartu anggota digital** berisi QR unik (berdasarkan ID user)
-- Reset password oleh admin / self-service via email
+- Perubahan password dilakukan melalui alur terautentikasi
 
 ### C. Manajemen Buku
 - CRUD data buku: judul, penulis, penerbit, ISBN, kategori, stok, lokasi rak, cover
@@ -46,7 +47,7 @@ Buatkan aplikasi manajemen perpustakaan sekolah/kampus yang **mobile-first**, de
 - Scan ulang QR buku saat pengembalian → status otomatis update, hitung denda jika telat
 - Riwayat peminjaman per user & per buku
 - Aturan peminjaman: maksimal jumlah buku, durasi pinjam, denda keterlambatan (dikonfigurasi admin)
-- Notifikasi (in-app/email) H-1 sebelum jatuh tempo
+- Notifikasi in-app H-1 sebelum jatuh tempo
 
 ### E. Dashboard & Laporan
 - Dashboard beda tampilan sesuai role:
@@ -65,7 +66,7 @@ Buatkan aplikasi manajemen perpustakaan sekolah/kampus yang **mobile-first**, de
 ## 3. Struktur Database (Ringkas)
 
 ```
-users (id, name, email, password, nis_nip, role_id, photo, member_qr_code, class_or_position)
+users (id, name, username, password, nis_nip, role_id, photo, member_qr_code, class_or_position)
 roles, permissions, role_has_permissions, model_has_roles  -> (Spatie)
 books (id, title, author, publisher, isbn, category_id, cover, description)
 book_categories (id, name)

@@ -44,7 +44,12 @@ class StudentRegistrationController extends Controller
 
     public function store(Request $request, StudentRegistrationService $service): JsonResponse
     {
-        $data = $request->validate(['name' => ['required', 'string', 'max:255'], 'nis' => ['required', 'string', 'max:100', 'regex:/^[0-9]+$/', 'unique:users,username', 'unique:students,nis'], 'email' => ['nullable', 'email', 'max:255', 'unique:users,email'], 'phone' => ['required', 'string', 'min:8', 'max:30', 'regex:/^[0-9+]+$/'], 'class_group_id' => ['required', Rule::exists('class_groups', 'id')->where('is_active', true)], 'password' => ['nullable', 'string', 'min:8', 'confirmed']]);
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'nis' => ['required', 'string', 'max:100', 'regex:/^[0-9]+$/', 'unique:users,username', 'unique:students,nis'],
+            'class_group_id' => ['required', Rule::exists('class_groups', 'id')->where('is_active', true)],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
+        ]);
         $user = $service->register($data);
         return response()->json(['message' => 'Pendaftaran berhasil. Silakan masuk menggunakan NIS.', 'data' => ['username' => $user->username, 'member_number' => $user->libraryMember->member_number]], 201);
     }
