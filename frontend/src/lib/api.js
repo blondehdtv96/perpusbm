@@ -58,12 +58,19 @@ export async function download(path, options = {}) {
       ...options.headers,
     },
   })
-  if (!response.ok) throw new ApiError('Unduhan gagal.', response.status)
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    throw new ApiError(payload.message ?? 'Unduhan gagal.', response.status, payload.errors)
+  }
   const blob = await response.blob()
   const disposition = response.headers.get('content-disposition') ?? ''
   const filename = disposition.match(/filename[^;=]*=(?:"([^"]+)"|([^;]+))/)?.slice(1).find(Boolean) ?? 'download'
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
-  anchor.href = url; anchor.download = filename.replaceAll('"', ''); anchor.click()
-  URL.revokeObjectURL(url)
+  anchor.href = url; anchor.download = filename.replaceAll('"', '')
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  // Revoking immediately can cut off larger downloads (e.g. multi-card PDFs) before the browser finishes reading the blob.
+  setTimeout(() => URL.revokeObjectURL(url), 30000)
 }

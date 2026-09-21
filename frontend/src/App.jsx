@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './components/AppShell'
 import { useAuth } from './store/auth'
+import { useAppSettings } from './store/appSettings'
 
 const AccessDeniedPage = lazy(() => import('./pages/AccessDeniedPage'))
 const AcademicMasterPage = lazy(() => import('./pages/AcademicMasterPage'))
@@ -33,10 +34,13 @@ function PermissionPage({ any, children }) {
 export default function App() {
   const initialize = useAuth((state) => state.initialize)
   const loading = useAuth((state) => state.loading)
+  const loadSettings = useAppSettings((state) => state.load)
+  const appName = useAppSettings((state) => state.app_name)
 
-  useEffect(() => { initialize() }, [initialize])
+  useEffect(() => { initialize(); loadSettings() }, [initialize, loadSettings])
+  useEffect(() => { document.title = appName }, [appName])
 
-  if (loading) return <div className="grid min-h-screen place-items-center bg-slate-50 text-slate-500">Memuat BM Library…</div>
+  if (loading) return <div className="grid min-h-screen place-items-center bg-slate-50 text-slate-500">Memuat {appName}…</div>
 
   return (
     <BrowserRouter>

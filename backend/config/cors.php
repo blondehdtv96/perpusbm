@@ -11,7 +11,7 @@ return [
     'allowed_origins' => $allowedOrigins,
     'allowed_origins_patterns' => [],
     'allowed_headers' => ['*'],
-    'exposed_headers' => ['Retry-After'],
+    'exposed_headers' => ['Retry-After', 'Content-Disposition'],
     'max_age' => 0,
     'supports_credentials' => true,
 ];

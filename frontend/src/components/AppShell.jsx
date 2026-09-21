@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useAuth } from '../store/auth'
+import { useAppSettings } from '../store/appSettings'
 
 const navGroups = [
   { label: 'Utama', items: [{ to: '/', label: 'Dashboard', icon: 'home', end: true }] },
@@ -18,7 +19,8 @@ export default function AppShell() {
   const [menuOpen, setMenuOpen] = useState(false); const [unreadNotifications, setUnreadNotifications] = useState(0)
   const groups = navGroups.map((group) => ({ ...group, items: group.items.filter((item) => !item.any || item.any.some((permission) => permissions.includes(permission))) })).filter((group) => group.items.length)
   const nav = groups.flatMap((group) => group.items)
-  const currentPage = nav.find((item) => item.end ? location.pathname === item.to : location.pathname.startsWith(item.to))?.label ?? 'BM Library'
+  const appName = useAppSettings((state) => state.app_name)
+  const currentPage = nav.find((item) => item.end ? location.pathname === item.to : location.pathname.startsWith(item.to))?.label ?? appName
   const student = roles.includes('student')
   const mobilePaths = student ? ['/', '/catalog', '/loans', '/profile'] : ['/', '/scan', '/loans', '/users']
   const preferred = mobilePaths.map((path) => nav.find((item) => item.to === path)).filter(Boolean)
@@ -56,7 +58,7 @@ export default function AppShell() {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1520px] px-4 pb-28 pt-6 sm:px-6 lg:px-8 lg:pb-10 lg:pt-8"><Outlet /></main>
+        <main className="mx-auto w-full max-w-[1520px] px-4 pb-28 pt-6 sm:px-6 lg:px-8 lg:pb-10 lg:pt-8"><Outlet /><Footer /></main>
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-2 pb-[max(.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-10px_30px_rgb(15_23_42/.08)] backdrop-blur-xl lg:hidden" aria-label="Navigasi cepat">{mobilePrimary.map((item) => <NavItem key={item.to} {...item} mobile />)}<button onClick={() => setMenuOpen(true)} className="min-h-14 rounded-xl text-[11px] font-bold text-slate-500"><span className="mx-auto mb-0.5 grid h-7 place-items-center"><Icon name="menu" /></span>Menu</button></nav>
@@ -66,7 +68,21 @@ export default function AppShell() {
   )
 }
 
-function Brand({ light = false, compact = false }) { return <div className="flex min-w-0 items-center gap-3"><span className={`grid shrink-0 place-items-center rounded-xl bg-red-600 font-black text-white shadow-lg shadow-red-950/20 ${compact ? 'h-9 w-9 text-xs' : 'h-11 w-11 text-sm'}`}>BM</span>{!compact && <span className="min-w-0"><b className={`block truncate text-sm font-black ${light ? 'text-white' : 'text-navy-950'}`}>SMK Bina Mandiri</b><small className={light ? 'text-blue-200' : 'text-slate-500'}>Library Management</small></span>}</div> }
+function Brand({ light = false, compact = false }) {
+  const { app_name: appName, app_subtitle: appSubtitle, logo_url: logoUrl } = useAppSettings()
+  const initials = appName.split(' ').map((word) => word.charAt(0)).join('').slice(0, 2).toUpperCase() || 'BM'
+  return <div className="flex min-w-0 items-center gap-3">
+    {logoUrl
+      ? <img src={logoUrl} alt={appName} className={`shrink-0 rounded-xl object-cover shadow-lg shadow-red-950/20 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`} />
+      : <span className={`grid shrink-0 place-items-center rounded-xl bg-red-600 font-black text-white shadow-lg shadow-red-950/20 ${compact ? 'h-9 w-9 text-xs' : 'h-11 w-11 text-sm'}`}>{initials}</span>}
+    {!compact && <span className="min-w-0"><b className={`block truncate text-sm font-black ${light ? 'text-white' : 'text-navy-950'}`}>{appName}</b>{appSubtitle && <small className={light ? 'text-blue-200' : 'text-slate-500'}>{appSubtitle}</small>}</span>}
+  </div>
+}
+function Footer() {
+  const footerText = useAppSettings((state) => state.footer_text)
+  const appName = useAppSettings((state) => state.app_name)
+  return <footer className="mt-10 border-t border-slate-200 pt-5 text-center text-xs text-slate-400">{footerText || `© ${new Date().getFullYear()} ${appName}. Seluruh hak cipta dilindungi.`}</footer>
+}
 function NavGroup({ group, onNavigate }) { return <section><p className="mb-2 px-3 text-[10px] font-black uppercase tracking-[.18em] text-blue-300/70">{group.label}</p><div className="space-y-1">{group.items.map((item) => <NavItem key={item.to} {...item} onClick={onNavigate} />)}</div></section> }
 function NavItem({ to, label, icon, end, mobile = false, onClick }) { return <NavLink to={to} end={end} onClick={onClick} className={({ isActive }) => mobile ? `group min-h-14 rounded-xl text-center text-[11px] font-bold ${isActive ? 'bg-blue-50 text-blue-700' : 'text-slate-500'}` : `group relative flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold transition ${isActive ? 'bg-white/12 text-white' : 'text-blue-100/75 hover:bg-white/7 hover:text-white'}`}><span className={mobile ? 'mx-auto mb-0.5 grid h-7 place-items-center' : 'grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white/5 group-hover:bg-white/10'}><Icon name={icon} size={mobile ? 20 : 19} /></span><span className={mobile ? 'block truncate px-1' : 'truncate'}>{label}</span>{!mobile && <span className="ml-auto opacity-40"><Icon name="chevron" size={14} /></span>}</NavLink> }
 function UserPanel({ user, roles, onLogout }) { return <div className="border-t border-white/10 bg-white/[.03] p-4"><div className="flex items-center gap-3"><Avatar user={user} dark /><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-white">{user.name}</p><p className="truncate text-xs text-blue-200">{roleLabel(roles[0])}</p></div></div><button onClick={onLogout} className="mt-4 flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border border-white/10 text-xs font-bold text-blue-100 hover:bg-white/10 hover:text-white"><Icon name="logout" size={17} /> Keluar dari sistem</button></div> }

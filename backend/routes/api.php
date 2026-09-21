@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AcademicMasterController;
 use App\Http\Controllers\Api\ActivityLogController;
+use App\Http\Controllers\Api\AppSettingController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BookController;
 use App\Http\Controllers\Api\BookCopyController;
@@ -20,6 +21,8 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/registration/options', [StudentRegistrationController::class, 'options'])->middleware('throttle:30,1');
 Route::post('/registration', [StudentRegistrationController::class, 'store'])->middleware('throttle:5,1');
+
+Route::get('/settings/app', [AppSettingController::class, 'show'])->middleware('throttle:60,1');
 
 Route::prefix('auth')->group(function (): void {
     Route::post('/login', [AuthController::class, 'login']);
@@ -48,6 +51,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
     Route::post('/users', [UserController::class, 'store'])->middleware('permission:users.create');
     Route::post('/users/cards/print', [UserController::class, 'printCards'])->middleware('permission:users.view');
+    Route::post('/users/bulk-delete', [UserController::class, 'bulkDestroy'])->middleware('permission:users.delete');
     Route::get('/users/{user}', [UserController::class, 'show'])->middleware('permission:users.view');
     Route::put('/users/{user}', [UserController::class, 'update'])->middleware('permission:users.update');
     Route::delete('/users/{user}', [UserController::class, 'destroy'])->middleware('permission:users.delete');
@@ -89,6 +93,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
     Route::get('/settings/loan-policies', [LoanPolicyController::class, 'index'])->middleware('permission:settings.view|settings.manage');
     Route::put('/settings/loan-policies/{loanPolicy}', [LoanPolicyController::class, 'update'])->middleware('permission:settings.manage');
+    Route::post('/settings/app', [AppSettingController::class, 'update'])->middleware('permission:settings.manage');
     Route::get('/reports/export', [ReportController::class, 'export'])->middleware('permission:reports.view');
     Route::get('/activity-logs', ActivityLogController::class)->middleware('permission:audit.view');
 

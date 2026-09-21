@@ -78,6 +78,39 @@ class UserController extends Controller
         return response()->json(status: 204);
     }
 
+    public function bulkDestroy(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1', 'max:100'],
+            'ids.*' => ['integer', 'distinct', Rule::exists('users', 'id')->whereNull('deleted_at')],
+        ]);
+
+        $users = User::query()->whereIn('id', $data['ids'])->get();
+        $deleted = [];
+        $skipped = [];
+
+        foreach ($users as $user) {
+            if ($user->is($request->user())) {
+                $skipped[] = ['id' => $user->id, 'name' => $user->name, 'reason' => 'Akun sendiri tidak dapat dihapus.'];
+
+                continue;
+            }
+            if ($user->loans()->whereNotNull('active_copy_id')->exists()) {
+                $skipped[] = ['id' => $user->id, 'name' => $user->name, 'reason' => 'Masih memiliki pinjaman aktif.'];
+
+                continue;
+            }
+
+            $user->delete();
+            ActivityLogger::log($request, 'user.deleted', $user);
+            $deleted[] = ['id' => $user->id, 'name' => $user->name];
+        }
+
+        ActivityLogger::log($request, 'users.bulk_deleted', null, ['deleted' => count($deleted), 'skipped' => count($skipped)]);
+
+        return response()->json(['data' => ['deleted' => $deleted, 'skipped' => $skipped]]);
+    }
+
     public function profile(Request $request): JsonResponse
     {
         return response()->json(['data' => $request->user()->load('roles:id,name')]);
