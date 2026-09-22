@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import QrScanner from '../components/QrScanner'
-import { Feedback, PageHeader, Panel, Tabs } from '../components/ui'
+import { BusyLabel, Feedback, PageHeader, Panel, ProgressBar, Tabs } from '../components/ui'
 import { ApiError, api } from '../lib/api'
 import { useAuth } from '../store/auth'
 
@@ -76,7 +76,8 @@ export default function ScanPage() {
         <label className="block text-sm font-bold text-slate-700">QR buku / kode inventaris<div className="mt-2 flex gap-2"><input value={manualBook} onChange={(event) => setManualBook(event.target.value)} className="min-h-12 min-w-0 flex-1 rounded-xl border border-slate-300 px-4 font-mono text-sm" placeholder="Contoh: BK-000001-001" /><button type="button" onClick={() => { addBook(manualBook); setManualBook('') }} className="rounded-xl bg-navy-950 px-5 font-bold text-white hover:bg-navy-900">Tambah</button></div></label>
         <div><div className="mb-2 flex items-center justify-between"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Buku dipindai</p><span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700">{bookCodes.length}</span></div>{bookCodes.length ? <div className="space-y-2">{bookCodes.map((code, index) => <div key={code} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white text-xs font-black text-blue-700">{index + 1}</span><code className="min-w-0 flex-1 truncate text-xs font-bold text-slate-700">{code}</code><button type="button" onClick={() => setBookCodes((items) => items.filter((item) => item !== code))} className="min-h-8 rounded-lg px-2 text-xs font-bold text-red-600 hover:bg-red-50">Hapus</button></div>)}</div> : <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">Belum ada buku dipindai.</div>}</div>
         {error && <Feedback type="error">{error}</Feedback>}{result && <Feedback type="success"><p>{result.message}</p>{result.data?.fine_amount > 0 && <p className="mt-1">Denda: Rp{Number(result.data.fine_amount).toLocaleString('id-ID')}</p>}</Feedback>}
-        <button disabled={submitting || !bookCodes.length || (mode === 'borrow' && !memberCode.trim())} className="min-h-12 w-full rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-50">{submitting ? 'Memproses transaksi…' : mode === 'borrow' ? `Konfirmasi ${bookCodes.length} buku` : 'Konfirmasi pengembalian'}</button></div></Panel>
+        <button disabled={submitting || !bookCodes.length || (mode === 'borrow' && !memberCode.trim())} className="min-h-12 w-full rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-50"><BusyLabel busy={submitting} busyText="Memproses transaksi…">{mode === 'borrow' ? `Konfirmasi ${bookCodes.length} buku` : 'Konfirmasi pengembalian'}</BusyLabel></button>
+        {submitting && <ProgressBar label={mode === 'borrow' ? 'Menyimpan peminjaman…' : 'Menyimpan pengembalian…'} hint="Mohon tunggu, jangan menutup atau memuat ulang halaman." />}</div></Panel>
     </form></div>
 }
 function Field({ label, value, onChange, placeholder, required }) { return <label className="block text-sm font-bold text-slate-700">{label}<input required={required} value={value} onChange={(event) => onChange(event.target.value)} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-4 font-mono text-sm" placeholder={placeholder} /></label> }

@@ -28,7 +28,7 @@ export default function AppShell() {
 
   useEffect(() => {
     let cancelled = false
-    const refresh = () => api('/api/notifications').then((response) => { if (!cancelled) setUnreadNotifications((response.data ?? []).filter((item) => !item.read_at).length) }).catch(() => {})
+    const refresh = () => api('/api/notifications', { silent: true }).then((response) => { if (!cancelled) setUnreadNotifications((response.data ?? []).filter((item) => !item.read_at).length) }).catch(() => {})
     refresh(); window.addEventListener('notifications:changed', refresh)
     return () => { cancelled = true; window.removeEventListener('notifications:changed', refresh) }
   }, [location.pathname])

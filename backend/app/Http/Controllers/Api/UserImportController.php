@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use PhpOffice\PhpSpreadsheet\Cell\DataValidation;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -48,9 +49,11 @@ class UserImportController extends Controller
                 ]);
             }
 
-            $success = 0;
+            $created = 0;
+            $updated = 0;
             $failed = 0;
             $processed = 0;
+            $notes = [];
 
             foreach ($rows as $offset => $values) {
                 if (! array_filter($values, fn ($value) => $value !== null && $value !== '')) {
@@ -58,12 +61,13 @@ class UserImportController extends Controller
                 }
 
                 $processed++;
+                $rowNumber = $offset + 2;
                 $row = array_combine($headers, array_slice(array_pad($values, count($headers), null), 0, count($headers)));
                 $row = array_map(fn ($value) => $value === null || $value === '' ? null : trim((string) $value), $row);
                 $validator = Validator::make($row, [
                     'name' => ['required', 'string', 'max:255'],
-                    'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/', 'unique:users,username'],
-                    'nis_nip' => ['nullable', 'string', 'max:100', 'unique:users,nis_nip'],
+                    'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/'],
+                    'nis_nip' => ['nullable', 'string', 'max:100'],
                     'member_type' => ['required', 'in:student,staff'],
                     'class_or_position' => ['nullable', 'string', 'max:255'],
                     'password' => ['required', 'string', 'min:8'],
@@ -74,14 +78,7 @@ class UserImportController extends Controller
                 ]);
 
                 if ($validator->fails()) {
-                    $safeRow = $row;
-                    $safeRow['password'] = '[DISEMBUNYIKAN]';
-                    ImportFailure::create([
-                        'import_job_id' => $job->id,
-                        'row_number' => $offset + 2,
-                        'row_data' => $safeRow,
-                        'errors' => $validator->errors()->toArray(),
-                    ]);
+                    $this->recordFailure($job, $rowNumber, $row, $validator->errors()->toArray());
                     $failed++;
 
                     continue;
@@ -90,15 +87,34 @@ class UserImportController extends Controller
                 $data = $validator->validated();
                 $password = $data['password'];
                 unset($data['password']);
-                DB::transaction(function () use ($data, $password): void {
-                    $user = User::create([...$data, 'password' => Hash::make($password), 'status' => 'active']);
-                    $user->assignRole($data['member_type']);
-                });
-                $success++;
+
+                try {
+                    $result = $this->saveMember($data, $password);
+                } catch (Throwable $exception) {
+                    report($exception);
+                    $this->recordFailure($job, $rowNumber, $row, [
+                        'row' => ['Baris tidak dapat disimpan karena kendala teknis. Silakan ulangi import untuk baris ini.'],
+                    ]);
+                    $failed++;
+
+                    continue;
+                }
+
+                foreach ($result['notes'] as $note) {
+                    $notes[] = ['row_number' => $rowNumber, 'username' => $result['user']->username, 'message' => $note];
+                }
+                $result['created'] ? $created++ : $updated++;
             }
 
-            $job->update(['status' => 'completed', 'total_rows' => $processed, 'success_rows' => $success, 'failed_rows' => $failed]);
-            ActivityLogger::log($request, 'users.imported', $job, ['success' => $success, 'failed' => $failed]);
+            $job->update([
+                'status' => 'completed',
+                'total_rows' => $processed,
+                'success_rows' => $created,
+                'updated_rows' => $updated,
+                'failed_rows' => $failed,
+                'notes' => $notes,
+            ]);
+            ActivityLogger::log($request, 'users.imported', $job, ['created' => $created, 'updated' => $updated, 'failed' => $failed]);
 
             return response()->json(['data' => $job->fresh('failures')], 201);
         } catch (Throwable $exception) {
@@ -107,6 +123,116 @@ class UserImportController extends Controller
         } finally {
             $spreadsheet?->disconnectWorksheets();
         }
+    }
+
+    /**
+     * Simpan satu baris anggota tanpa pernah menggagalkan baris karena bentrok unik:
+     * anggota lama dipakai ulang (termasuk yang pernah dihapus) dan username bentrok diberi akhiran.
+     *
+     * @return array{user: User, created: bool, notes: array<int, string>}
+     */
+    private function saveMember(array $data, string $password): array
+    {
+        return DB::transaction(function () use ($data, $password): array {
+            $notes = [];
+            $nisNip = $data['nis_nip'] ?? null;
+            $existing = $nisNip !== null ? User::withTrashed()->where('nis_nip', $nisNip)->first() : null;
+
+            if (! $existing) {
+                $byUsername = User::withTrashed()->where('username', $data['username'])->first();
+                if ($byUsername && $nisNip !== null && $byUsername->nis_nip !== null && $byUsername->nis_nip !== $nisNip) {
+                    $notes[] = "Username {$data['username']} sudah dipakai anggota dengan NIS/NIP {$byUsername->nis_nip}, sehingga baris ini disimpan sebagai anggota baru.";
+                    $byUsername = null;
+                }
+                $existing = $byUsername;
+            }
+
+            if ($existing && $existing->hasAnyRole(['super_admin', 'librarian'])) {
+                $notes[] = "Data baris ini cocok dengan akun petugas {$existing->username}; akun tersebut tidak diubah dan anggota disimpan terpisah.";
+                $existing = null;
+            }
+
+            $user = $existing ?? new User;
+            $created = $existing === null;
+            $attributes = ['name' => $data['name'], 'member_type' => $data['member_type']];
+
+            if ($created) {
+                $attributes['username'] = $this->availableUsername($data['username']);
+                $attributes['password'] = Hash::make($password);
+                $attributes['status'] = 'active';
+                if ($attributes['username'] !== $data['username']) {
+                    $notes[] = "Username {$data['username']} sudah dipakai, anggota ini disimpan dengan username {$attributes['username']}.";
+                }
+            } elseif ($data['username'] !== $user->username) {
+                if ($this->isTaken('username', $data['username'], $user->getKey())) {
+                    $notes[] = "Username {$data['username']} sudah dipakai akun lain, username {$user->username} dipertahankan.";
+                } else {
+                    $attributes['username'] = $data['username'];
+                }
+            }
+
+            if ($nisNip !== null) {
+                if ($this->isTaken('nis_nip', $nisNip, $user->getKey())) {
+                    $notes[] = "NIS/NIP {$nisNip} sudah dipakai anggota lain sehingga tidak disimpan pada baris ini.";
+                } else {
+                    $attributes['nis_nip'] = $nisNip;
+                }
+            }
+
+            if ($data['class_or_position'] !== null) {
+                $attributes['class_or_position'] = $data['class_or_position'];
+            }
+
+            if (! $created && $user->trashed()) {
+                $user->restore();
+                $attributes['status'] = 'active';
+                $notes[] = 'Anggota ini pernah dihapus dan kini diaktifkan kembali dengan data terbaru.';
+            } elseif (! $created) {
+                $notes[] = 'Anggota sudah terdaftar, datanya diperbarui dan password lama tetap dipakai.';
+            }
+
+            $user->fill($attributes)->save();
+
+            if ($created || $user->roles->isEmpty() || $user->roles->pluck('name')->diff(['student', 'staff'])->isEmpty()) {
+                $user->syncRoles([$data['member_type']]);
+            }
+
+            return ['user' => $user, 'created' => $created, 'notes' => $notes];
+        });
+    }
+
+    private function availableUsername(string $username): string
+    {
+        if (! $this->isTaken('username', $username)) {
+            return $username;
+        }
+
+        for ($suffix = 2; $suffix <= 999; $suffix++) {
+            $candidate = substr($username, 0, 100 - strlen((string) $suffix)).$suffix;
+            if (! $this->isTaken('username', $candidate)) {
+                return $candidate;
+            }
+        }
+
+        return substr($username, 0, 92).strtolower(Str::random(8));
+    }
+
+    private function isTaken(string $column, string $value, ?int $ignoreId = null): bool
+    {
+        return User::withTrashed()->where($column, $value)
+            ->when($ignoreId !== null, fn ($query) => $query->whereKeyNot($ignoreId))
+            ->exists();
+    }
+
+    private function recordFailure(ImportJob $job, int $rowNumber, array $row, array $errors): void
+    {
+        $row['password'] = '[DISEMBUNYIKAN]';
+        ImportFailure::create([
+            'import_job_id' => $job->id,
+            'row_number' => $rowNumber,
+            'row_data' => $row,
+            'errors' => $errors,
+        ]);
     }
 
     public function template(): StreamedResponse
@@ -153,7 +279,9 @@ class UserImportController extends Controller
                 ['5', 'member_type dipilih dari dropdown: student atau staff.'],
                 ['6', 'Password awal minimal 8 karakter. Gunakan password unik dan aman.'],
                 ['7', 'Username, NIS/NIP, dan password diformat sebagai teks agar format asli dipertahankan.'],
-                ['8', 'Sheet Contoh hanya panduan dan tidak akan diimpor.'],
+                ['8', 'Baris dengan username atau NIS/NIP yang sudah terdaftar tidak gagal: data anggota lama diperbarui dan password lamanya tetap berlaku.'],
+                ['9', 'Jika username sudah dipakai anggota lain, sistem menambahkan angka di belakangnya dan mencatatnya di hasil import.'],
+                ['10', 'Sheet Contoh hanya panduan dan tidak akan diimpor.'],
                 ['', 'Simpan sebagai XLSX, lalu unggah melalui halaman Anggota. Maksimal 5 MB.'],
             ], null, 'A1');
             $guide->mergeCells('A1:B1');
@@ -165,7 +293,7 @@ class UserImportController extends Controller
             $guide->getStyle('A2:B2')->getFont()->setBold(true);
             $guide->getColumnDimension('A')->setWidth(14);
             $guide->getColumnDimension('B')->setWidth(95);
-            $guide->getStyle('A1:B11')->getAlignment()->setWrapText(true)->setVertical(Alignment::VERTICAL_TOP);
+            $guide->getStyle('A1:B13')->getAlignment()->setWrapText(true)->setVertical(Alignment::VERTICAL_TOP);
             $guide->freezePane('A3');
 
             $example = $spreadsheet->createSheet();

@@ -36,3 +36,9 @@ input:focus, select:focus, textarea:focus { border-color: #2563eb; box-shadow: 0
   #member-card .print-hidden { display: none !important; }
   @page { size: landscape; margin: 10mm; }
 }
+
+@keyframes app-progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.app-progress-indeterminate { animation: app-progress-slide 1.15s ease-in-out infinite; }

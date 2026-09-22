@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { EmptyState, Feedback, PageHeader } from '../components/ui'
+import { BusyLabel, EmptyState, Feedback, LoadingOverlay, PageHeader, ProgressBar } from '../components/ui'
 import { api, download } from '../lib/api'
 import { useAuth } from '../store/auth'
 
@@ -41,6 +41,10 @@ export default function InventoryPage() {
   const [editForm, setEditForm] = useState({ inventory_code: '', shelf_location: '', status: 'available', condition_notes: '' })
   const [savingCopy, setSavingCopy] = useState(false)
   const [creatingBook, setCreatingBook] = useState(false)
+  const [bookProgress, setBookProgress] = useState(null)
+  const [creatingCategory, setCreatingCategory] = useState(false)
+  const [removingBook, setRemovingBook] = useState(null)
+  const [printingLabels, setPrintingLabels] = useState(false)
   const [editError, setEditError] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -102,12 +106,15 @@ export default function InventoryPage() {
 
   const createCategory = async (event) => {
     event.preventDefault()
+    if (creatingCategory) return
+    setCreatingCategory(true)
+    setError('')
     try {
       await api('/api/categories', { method: 'POST', body: JSON.stringify({ name: categoryName }) })
       setCategoryName('')
       setMessage('Kategori berhasil ditambahkan.')
-      loadReferences()
-    } catch (reason) { setError(reason.message) }
+      await loadReferences()
+    } catch (reason) { setError(reason.message) } finally { setCreatingCategory(false) }
   }
 
   const createBook = async (event) => {
@@ -116,11 +123,16 @@ export default function InventoryPage() {
     setCreatingBook(true)
     setError('')
     setMessage('')
+    setBookProgress({ percent: 0, phase: cover ? 'upload' : 'processing' })
     try {
       const body = new FormData()
       Object.entries(book).forEach(([key, value]) => body.append(key, value))
       if (cover) body.append('cover', cover)
-      await api('/api/books', { method: 'POST', body })
+      await api('/api/books', {
+        method: 'POST',
+        body,
+        onProgress: (percent, phase) => setBookProgress(phase === 'done' ? { percent: 100, phase: 'processing' } : { percent, phase }),
+      })
       setBook({ title: '', author: '', publisher: '', isbn: '', book_category_id: '', copies: 1, shelf_location: '' })
       setCover(null)
       setMessage('Buku dan eksemplarnya berhasil ditambahkan.')
@@ -129,16 +141,19 @@ export default function InventoryPage() {
       setError(reason.message)
     } finally {
       setCreatingBook(false)
+      setBookProgress(null)
     }
   }
 
   const removeBook = async (item) => {
     if (!confirm(`Hapus ${item.title}?`)) return
+    setRemovingBook(item.id)
+    setError('')
     try {
       await api(`/api/books/${item.id}`, { method: 'DELETE' })
       setMessage('Judul buku berhasil dihapus.')
       refresh()
-    } catch (reason) { setError(reason.message) }
+    } catch (reason) { setError(reason.message) } finally { setRemovingBook(null) }
   }
 
   const openEdit = (copy) => {
@@ -190,11 +205,12 @@ export default function InventoryPage() {
 
   const labels = async () => {
     if (!selected.length) return
+    setPrintingLabels(true)
     setError('')
     try {
       await download('/api/book-copies/labels', { method: 'POST', body: JSON.stringify({ ids: selected }) })
       setMessage(`${selected.length} label berhasil dibuat.`)
-    } catch (reason) { setError(reason.message) }
+    } catch (reason) { setError(reason.message) } finally { setPrintingLabels(false) }
   }
 
   const resetCopyPage = (setter) => (event) => {
@@ -207,14 +223,20 @@ export default function InventoryPage() {
     {message && <Feedback type="success">{message}</Feedback>}
     {error && <Feedback type="error">{error}</Feedback>}
     <div className="grid gap-5 xl:grid-cols-[1fr_2fr]">
-      <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Kategori</h2><form onSubmit={createCategory} className="mt-3 flex gap-2"><input required value={categoryName} onChange={(e) => setCategoryName(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-slate-300 px-3" placeholder="Nama kategori" /><button className="rounded-xl bg-navy-950 px-4 font-bold text-white hover:bg-navy-900">Tambah</button></form><div className="mt-4 flex flex-wrap gap-2">{categories.map((item) => <span key={item.id} className="rounded-full bg-slate-100 px-3 py-2 text-xs font-bold">{item.name} ({item.books_count})</span>)}</div></section>
-      <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Tambah buku</h2><form onSubmit={createBook} className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{['title', 'author', 'publisher', 'isbn', 'shelf_location'].map((field) => <input key={field} required={['title', 'author'].includes(field)} value={book[field]} onChange={(e) => setBook({ ...book, [field]: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3" placeholder={field.replace('_', ' ')} />)}<select value={book.book_category_id} onChange={(e) => setBook({ ...book, book_category_id: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3"><option value="">Tanpa kategori</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label className="text-sm font-bold text-slate-700">Jumlah eksemplar<input required type="number" min="0" max="10000" step="1" value={book.copies} onChange={(e) => setBook({ ...book, copies: e.target.value })} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-300 px-3 font-normal" /><small className="mt-1 block font-normal text-slate-500">Masukkan bilangan bulat 0–10.000 eksemplar.</small></label><label className="flex min-h-11 cursor-pointer items-center rounded-xl border border-slate-300 px-3 text-sm text-slate-500">{cover ? cover.name : 'Pilih cover'}<input type="file" accept="image/*" onChange={(e) => setCover(e.target.files?.[0] ?? null)} className="sr-only" /></label><button disabled={creatingBook} className="min-h-11 rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60">{creatingBook ? 'Menyimpan buku…' : 'Simpan buku'}</button></form></section>
+      <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Kategori</h2><form onSubmit={createCategory} className="mt-3 flex gap-2"><input required value={categoryName} onChange={(e) => setCategoryName(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-slate-300 px-3" placeholder="Nama kategori" /><button disabled={creatingCategory} className="rounded-xl bg-navy-950 px-4 font-bold text-white hover:bg-navy-900 disabled:opacity-60"><BusyLabel busy={creatingCategory} busyText="Menyimpan…">Tambah</BusyLabel></button></form><div className="mt-4 flex flex-wrap gap-2">{categories.map((item) => <span key={item.id} className="rounded-full bg-slate-100 px-3 py-2 text-xs font-bold">{item.name} ({item.books_count})</span>)}</div></section>
+      <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Tambah buku</h2><form onSubmit={createBook} className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{['title', 'author', 'publisher', 'isbn', 'shelf_location'].map((field) => <input key={field} required={['title', 'author'].includes(field)} value={book[field]} onChange={(e) => setBook({ ...book, [field]: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3" placeholder={field.replace('_', ' ')} />)}<select value={book.book_category_id} onChange={(e) => setBook({ ...book, book_category_id: e.target.value })} className="min-h-11 rounded-xl border border-slate-300 px-3"><option value="">Tanpa kategori</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label className="text-sm font-bold text-slate-700">Jumlah eksemplar<input required type="number" min="0" max="10000" step="1" value={book.copies} onChange={(e) => setBook({ ...book, copies: e.target.value })} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-300 px-3 font-normal" /><small className="mt-1 block font-normal text-slate-500">Masukkan bilangan bulat 0–10.000 eksemplar.</small></label><label className="flex min-h-11 cursor-pointer items-center rounded-xl border border-slate-300 px-3 text-sm text-slate-500">{cover ? cover.name : 'Pilih cover'}<input type="file" accept="image/*" onChange={(e) => setCover(e.target.files?.[0] ?? null)} className="sr-only" /></label><button disabled={creatingBook} className="min-h-11 rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60"><BusyLabel busy={creatingBook} busyText="Menyimpan buku…">Simpan buku</BusyLabel></button>
+        {bookProgress && <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-3 sm:col-span-full">
+          {bookProgress.phase === 'upload'
+            ? <ProgressBar value={bookProgress.percent} label="Mengunggah cover buku" hint="Jangan tutup halaman ini sampai proses selesai." />
+            : <ProgressBar label="Menyimpan buku dan eksemplarnya…" hint="Eksemplar dan kode inventaris sedang dibuat." />}
+        </div>}</form></section>
     </div>
 
-    <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Judul buku</h2><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{books.map((item) => <article key={item.id} className="rounded-2xl bg-slate-50 p-4"><p className="font-black">{item.title}</p><p className="text-sm text-slate-500">{item.author}</p><p className="mt-3 text-xs font-bold text-emerald-700">{item.available_copies_count}/{item.copies_count} tersedia</p><button onClick={() => removeBook(item)} className="mt-3 text-xs font-bold text-red-600">Hapus judul</button></article>)}</div></section>
+    <section className="rounded-3xl border border-slate-200 bg-white p-5"><h2 className="font-black text-navy-950">Judul buku</h2><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{books.map((item) => <article key={item.id} className="rounded-2xl bg-slate-50 p-4"><p className="font-black">{item.title}</p><p className="text-sm text-slate-500">{item.author}</p><p className="mt-3 text-xs font-bold text-emerald-700">{item.available_copies_count}/{item.copies_count} tersedia</p><button onClick={() => removeBook(item)} disabled={removingBook === item.id} className="mt-3 text-xs font-bold text-red-600 disabled:opacity-50"><BusyLabel busy={removingBook === item.id} busyText="Menghapus…" spinnerSize={12}>Hapus judul</BusyLabel></button></article>)}</div></section>
 
-    <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-4 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6"><div><div className="flex items-center gap-3"><h2 className="text-xl font-black text-navy-950">Eksemplar</h2><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{copyPagination.total} data</span></div><p className="mt-1 text-sm text-slate-500">Cari, filter, edit, lalu pilih eksemplar untuk mencetak label QR.</p></div>{canUpdate && <button type="button" onClick={labels} disabled={!selected.length} className="min-h-11 shrink-0 rounded-xl bg-blue-700 px-5 text-sm font-bold text-white shadow-sm hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-40">Cetak label ({selected.length})</button>}</div>
+    <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+      <LoadingOverlay show={printingLabels} label="Menyiapkan label QR…" />
+      <div className="flex flex-col gap-4 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6"><div><div className="flex items-center gap-3"><h2 className="text-xl font-black text-navy-950">Eksemplar</h2><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{copyPagination.total} data</span></div><p className="mt-1 text-sm text-slate-500">Cari, filter, edit, lalu pilih eksemplar untuk mencetak label QR.</p></div>{canUpdate && <button type="button" onClick={labels} disabled={!selected.length || printingLabels} className="min-h-11 shrink-0 rounded-xl bg-blue-700 px-5 text-sm font-bold text-white shadow-sm hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-40"><BusyLabel busy={printingLabels} busyText="Membuat label…">{`Cetak label (${selected.length})`}</BusyLabel></button>}</div>
 
       <div className="grid gap-3 border-b border-slate-200 bg-slate-50/70 p-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_14rem_11rem] sm:p-5">
         <label className="sm:col-span-2 lg:col-span-1"><span className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">Cari kode</span><input type="search" value={copySearch} onChange={resetCopyPage(setCopySearch)} placeholder="Contoh: BK-000001-001" className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-4 font-mono text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label>
@@ -241,6 +263,6 @@ export default function InventoryPage() {
       {!copyLoading && copyPagination.last > 1 && <nav aria-label="Navigasi halaman eksemplar" className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-4 sm:px-6"><button type="button" disabled={copyPagination.current <= 1} onClick={() => setCopyPage((value) => Math.max(1, value - 1))} className="min-h-10 rounded-xl border border-slate-300 px-4 text-sm font-bold text-slate-700 disabled:opacity-40">Sebelumnya</button><p className="text-center text-xs font-semibold text-slate-500 sm:text-sm">Halaman {copyPagination.current} dari {copyPagination.last}</p><button type="button" disabled={copyPagination.current >= copyPagination.last} onClick={() => setCopyPage((value) => Math.min(copyPagination.last, value + 1))} className="min-h-10 rounded-xl border border-slate-300 px-4 text-sm font-bold text-slate-700 disabled:opacity-40">Berikutnya</button></nav>}
     </section>
 
-    {editingCopy && <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/65 p-3 backdrop-blur-sm sm:p-6" role="presentation" onMouseDown={() => { if (!savingCopy) setEditingCopy(null) }}><div role="dialog" aria-modal="true" aria-labelledby="edit-copy-title" className="mx-auto my-4 max-w-xl overflow-hidden rounded-3xl bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5 sm:p-6"><div><p className="text-xs font-black uppercase tracking-wider text-blue-700">Kelola eksemplar</p><h2 id="edit-copy-title" className="mt-1 text-2xl font-black text-navy-950">Edit eksemplar</h2><p className="mt-1 text-sm text-slate-500">{editingCopy.book?.title}</p></div><button type="button" disabled={savingCopy} onClick={() => setEditingCopy(null)} aria-label="Tutup modal edit" className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-slate-100 text-xl font-black text-slate-600 disabled:opacity-40">×</button></div><form onSubmit={saveCopy} className="space-y-4 p-5 sm:p-6">{editError && <Feedback type="error">{editError}</Feedback>}<label className="block text-sm font-bold text-slate-700">Kode inventaris<input required maxLength="100" value={editForm.inventory_code} onChange={(event) => setEditForm({ ...editForm, inventory_code: event.target.value })} className="mt-1.5 min-h-12 w-full rounded-xl border border-slate-300 px-4 font-mono outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label><div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-bold text-slate-700">Lokasi rak<input maxLength="100" value={editForm.shelf_location} onChange={(event) => setEditForm({ ...editForm, shelf_location: event.target.value })} className="mt-1.5 min-h-12 w-full rounded-xl border border-slate-300 px-4 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label><label className="block text-sm font-bold text-slate-700">Status<select disabled={editingCopy.status === 'borrowed'} value={editForm.status} onChange={(event) => setEditForm({ ...editForm, status: event.target.value })} className="mt-1.5 min-h-12 w-full rounded-xl border border-slate-300 bg-white px-4 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100">{editingCopy.status === 'borrowed' && <option value="borrowed">Dipinjam</option>}{statusOptions.filter(([value]) => value !== 'borrowed').map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>{editingCopy.status === 'borrowed' && <Feedback type="warning">Status dipinjam hanya dapat berubah melalui proses pengembalian.</Feedback>}<label className="block text-sm font-bold text-slate-700">Catatan kondisi<textarea rows="3" value={editForm.condition_notes} onChange={(event) => setEditForm({ ...editForm, condition_notes: event.target.value })} placeholder="Contoh: Sampul sedikit terlipat" className="mt-1.5 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label><div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end"><button type="button" disabled={savingCopy} onClick={() => setEditingCopy(null)} className="min-h-11 rounded-xl border border-slate-300 px-5 font-bold text-slate-700 disabled:opacity-40">Batal</button><button disabled={savingCopy} className="min-h-11 rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-60">{savingCopy ? 'Menyimpan…' : 'Simpan perubahan'}</button></div></form></div></div>}
+    {editingCopy && <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/65 p-3 backdrop-blur-sm sm:p-6" role="presentation" onMouseDown={() => { if (!savingCopy) setEditingCopy(null) }}><div role="dialog" aria-modal="true" aria-labelledby="edit-copy-title" className="mx-auto my-4 max-w-xl overflow-hidden rounded-3xl bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5 sm:p-6"><div><p className="text-xs font-black uppercase tracking-wider text-blue-700">Kelola eksemplar</p><h2 id="edit-copy-title" className="mt-1 text-2xl font-black text-navy-950">Edit eksemplar</h2><p className="mt-1 text-sm text-slate-500">{editingCopy.book?.title}</p></div><button type="button" disabled={savingCopy} onClick={() => setEditingCopy(null)} aria-label="Tutup modal edit" className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-slate-100 text-xl font-black text-slate-600 disabled:opacity-40">×</button></div><form onSubmit={saveCopy} className="space-y-4 p-5 sm:p-6">{editError && <Feedback type="error">{editError}</Feedback>}<label className="block text-sm font-bold text-slate-700">Kode inventaris<input required maxLength="100" value={editForm.inventory_code} onChange={(event) => setEditForm({ ...editForm, inventory_code: event.target.value })} className="mt-1.5 min-h-12 w-full rounded-xl border border-slate-300 px-4 font-mono outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label><div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-bold text-slate-700">Lokasi rak<input maxLength="100" value={editForm.shelf_location} onChange={(event) => setEditForm({ ...editForm, shelf_location: event.target.value })} className="mt-1.5 min-h-12 w-full rounded-xl border border-slate-300 px-4 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label><label className="block text-sm font-bold text-slate-700">Status<select disabled={editingCopy.status === 'borrowed'} value={editForm.status} onChange={(event) => setEditForm({ ...editForm, status: event.target.value })} className="mt-1.5 min-h-12 w-full rounded-xl border border-slate-300 bg-white px-4 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100">{editingCopy.status === 'borrowed' && <option value="borrowed">Dipinjam</option>}{statusOptions.filter(([value]) => value !== 'borrowed').map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>{editingCopy.status === 'borrowed' && <Feedback type="warning">Status dipinjam hanya dapat berubah melalui proses pengembalian.</Feedback>}<label className="block text-sm font-bold text-slate-700">Catatan kondisi<textarea rows="3" value={editForm.condition_notes} onChange={(event) => setEditForm({ ...editForm, condition_notes: event.target.value })} placeholder="Contoh: Sampul sedikit terlipat" className="mt-1.5 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label><div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end"><button type="button" disabled={savingCopy} onClick={() => setEditingCopy(null)} className="min-h-11 rounded-xl border border-slate-300 px-5 font-bold text-slate-700 disabled:opacity-40">Batal</button><button disabled={savingCopy} className="min-h-11 rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-60"><BusyLabel busy={savingCopy} busyText="Menyimpan…">Simpan perubahan</BusyLabel></button></div></form></div></div>}
   </div>
 }

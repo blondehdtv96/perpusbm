@@ -42,6 +42,39 @@ class MvpModulesTest extends TestCase
         $this->assertDatabaseCount('import_failures', 1);
     }
 
+    public function test_import_never_fails_rows_because_of_duplicate_username_or_nis(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $existing = User::factory()->create(['name' => 'Nama Lama', 'username' => 'siswa.lama', 'nis_nip' => '2001', 'member_type' => 'student']);
+        $existing->assignRole('student');
+        $deleted = User::factory()->create(['username' => 'siswa.hapus', 'nis_nip' => '2002', 'member_type' => 'student']);
+        $deleted->assignRole('student');
+        $deleted->delete();
+
+        $csv = "name,username,nis_nip,member_type,class_or_position,password\n".
+            "Nama Baru,siswa.lama,2001,student,XII IPA 2,password123\n".      // sudah ada: diperbarui
+            "Siswa Kembali,siswa.hapus,2002,student,XI IPS 1,password123\n".  // pernah dihapus: dipulihkan
+            "Siswa Bentrok,siswa.lama,2003,student,X IPA 1,password123\n".    // username dipakai orang lain: diberi akhiran
+            "Siswa Admin,admin,2004,staff,Pustakawan,password123\n";          // bentrok akun petugas: dibuat terpisah
+
+        $response = $this->actingAs($admin)->post('/api/imports/users', [
+            'file' => UploadedFile::fake()->createWithContent('anggota.csv', $csv),
+        ], ['Accept' => 'application/json']);
+
+        $response->assertCreated()
+            ->assertJsonPath('data.failed_rows', 0)
+            ->assertJsonPath('data.success_rows', 2)
+            ->assertJsonPath('data.updated_rows', 2);
+        $this->assertDatabaseCount('import_failures', 0);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.lama', 'nis_nip' => '2001', 'name' => 'Nama Baru', 'class_or_position' => 'XII IPA 2']);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.hapus', 'nis_nip' => '2002', 'status' => 'active', 'deleted_at' => null]);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.lama2', 'nis_nip' => '2003']);
+        $this->assertDatabaseHas('users', ['username' => 'admin2', 'name' => 'Siswa Admin']);
+        $this->assertTrue(User::where('username', 'admin')->firstOrFail()->hasRole('super_admin'));
+        $this->assertTrue($existing->fresh()->password === $existing->password, 'Password anggota lama tidak boleh berubah saat import.');
+    }
+
     public function test_inventory_codes_work_and_payment_keeps_a_ledger(): void
     {
         [$admin, $member, $copy] = $this->fixture();

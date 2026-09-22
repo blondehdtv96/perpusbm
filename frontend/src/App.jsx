@@ -1,8 +1,10 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './components/AppShell'
+import TopProgressBar from './components/TopProgressBar'
 import { useAuth } from './store/auth'
 import { useAppSettings } from './store/appSettings'
+import { Spinner } from './components/ui'
 
 const AccessDeniedPage = lazy(() => import('./pages/AccessDeniedPage'))
 const AcademicMasterPage = lazy(() => import('./pages/AcademicMasterPage'))
@@ -40,11 +42,12 @@ export default function App() {
   useEffect(() => { initialize(); loadSettings() }, [initialize, loadSettings])
   useEffect(() => { document.title = appName }, [appName])
 
-  if (loading) return <div className="grid min-h-screen place-items-center bg-slate-50 text-slate-500">Memuat {appName}…</div>
+  if (loading) return <div className="grid min-h-screen place-items-center gap-3 bg-slate-50 text-slate-500"><TopProgressBar /><Spinner size={30} className="text-blue-700" /><p className="text-sm font-semibold">Memuat {appName}…</p></div>
 
   return (
     <BrowserRouter>
-      <Suspense fallback={<div className="grid min-h-[50vh] place-items-center text-slate-500">Memuat halaman…</div>}>
+      <TopProgressBar />
+      <Suspense fallback={<div className="grid min-h-[50vh] place-items-center gap-3 text-slate-500"><Spinner size={26} className="text-blue-700" /><p className="text-sm font-semibold">Memuat halaman…</p></div>}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
+import { BusyLabel } from '../components/ui'
 import { ApiError } from '../lib/api'
 import { useAuth } from '../store/auth'
 import { useAppSettings } from '../store/appSettings'
@@ -49,7 +50,7 @@ export default function LoginPage() {
           <label className="mt-7 block text-sm font-bold text-slate-700">NIS / Username<input type="text" name="username" autoComplete="username" autoFocus required value={form.username} onChange={(event) => { setForm({ ...form, username: event.target.value }); setRetryAfter(0); setError('') }} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-4" /></label>
           <label className="mt-4 block text-sm font-bold text-slate-700">Kata sandi<input type="password" name="password" autoComplete="current-password" required value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-4" /></label>
           <label className="mt-4 flex min-h-11 cursor-pointer items-center gap-3 text-sm text-slate-600"><input type="checkbox" checked={form.remember} onChange={(event) => setForm({ ...form, remember: event.target.checked })} className="h-4 w-4 accent-blue-700" /> Ingat sesi saya</label>
-          <button disabled={submitting || retryAfter > 0} className="mt-5 min-h-12 w-full rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800 disabled:opacity-60">{submitting ? 'Memproses…' : retryAfter > 0 ? `Coba lagi dalam ${retryAfter} detik` : 'Masuk'}</button>
+          <button disabled={submitting || retryAfter > 0} className="mt-5 min-h-12 w-full rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800 disabled:opacity-60"><BusyLabel busy={submitting} busyText="Memproses…">{retryAfter > 0 ? `Coba lagi dalam ${retryAfter} detik` : 'Masuk'}</BusyLabel></button>
           <div className="mt-6 border-t border-slate-200 pt-5 text-center text-sm text-slate-600">Belum menjadi anggota? <Link to="/register" className="font-black text-blue-700 hover:text-blue-900">Daftar siswa</Link></div>
         </form>
       </section>

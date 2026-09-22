@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { EmptyState, Feedback, LoadingRows, PageHeader, Panel } from '../components/ui'
+import { BusyLabel, EmptyState, Feedback, LoadingRows, PageHeader, Panel, ProgressBar, Spinner } from '../components/ui'
 import { api } from '../lib/api'
 import { formatCurrency } from '../lib/format'
 import { useAuth } from '../store/auth'
@@ -28,6 +28,7 @@ function AppIdentityPanel({ onSaved, onError }) {
   const [preview, setPreview] = useState(null)
   const [removeLogo, setRemoveLogo] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(null)
   const [syncedWith, setSyncedWith] = useState(null)
   const fileInput = useRef(null)
 
@@ -45,6 +46,7 @@ function AppIdentityPanel({ onSaved, onError }) {
 
   const submit = async (event) => {
     event.preventDefault(); setSaving(true); onError(''); onSaved('')
+    setUploadProgress({ percent: 0, phase: logoFile ? 'upload' : 'processing' })
     const body = new FormData()
     body.append('app_name', form.app_name)
     body.append('app_subtitle', form.app_subtitle)
@@ -52,11 +54,15 @@ function AppIdentityPanel({ onSaved, onError }) {
     if (logoFile) body.append('logo', logoFile)
     if (removeLogo) body.append('remove_logo', '1')
     try {
-      const response = await api('/api/settings/app', { method: 'POST', body })
+      const response = await api('/api/settings/app', {
+        method: 'POST',
+        body,
+        onProgress: (percent, phase) => setUploadProgress(phase === 'done' ? { percent: 100, phase: 'processing' } : { percent, phase }),
+      })
       setSettings(response.data)
       setLogoFile(null); setPreview(null); setRemoveLogo(false)
       onSaved('Identitas aplikasi berhasil disimpan.')
-    } catch (reason) { onError(reason.message) } finally { setSaving(false) }
+    } catch (reason) { onError(reason.message) } finally { setSaving(false); setUploadProgress(null) }
   }
 
   const currentLogo = preview ?? (!removeLogo ? settings.logo_url : null)
@@ -71,13 +77,13 @@ function AppIdentityPanel({ onSaved, onError }) {
         <label className="text-sm font-bold text-slate-700 sm:col-span-1">Nama aplikasi<input type="text" required maxLength={100} value={form.app_name} onChange={(event) => setForm({ ...form, app_name: event.target.value })} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3 text-slate-900" /></label>
         <label className="text-sm font-bold text-slate-700 sm:col-span-1">Subjudul<input type="text" maxLength={150} value={form.app_subtitle} onChange={(event) => setForm({ ...form, app_subtitle: event.target.value })} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3 text-slate-900" /><small className="mt-1 block font-normal text-slate-400">Tampil di bawah nama aplikasi, mis. "Library Management"</small></label>
         <label className="text-sm font-bold text-slate-700 sm:col-span-2">Teks footer<textarea maxLength={255} rows={2} value={form.footer_text} onChange={(event) => setForm({ ...form, footer_text: event.target.value })} placeholder="© 2026 SMK Bina Mandiri. Seluruh hak cipta dilindungi." className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-slate-900" /></label>
-        <div className="sm:col-span-2"><button disabled={saving} className="min-h-11 rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-50">{saving ? 'Menyimpan…' : 'Simpan identitas'}</button></div>
+        <div className="space-y-3 sm:col-span-2"><button disabled={saving} className="min-h-11 rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-50"><BusyLabel busy={saving} busyText="Menyimpan…">Simpan identitas</BusyLabel></button>{uploadProgress && (uploadProgress.phase === 'upload' ? <ProgressBar value={uploadProgress.percent} label="Mengunggah logo" /> : <ProgressBar label="Menyimpan identitas aplikasi…" />)}</div>
       </div>
     </form>
   </Panel>
 }
-function PolicyCard({ policy, index, policies, setPolicies, canManage, busy, onSave }) { return <article className="rounded-2xl border border-slate-200 bg-slate-50/60 p-5"><div className="flex items-center justify-between"><div><p className="text-xs font-black uppercase tracking-wider text-blue-700">Tipe anggota</p><h3 className="mt-1 text-xl font-black text-navy-950">{memberLabel(policy.member_type)}</h3></div><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-500 shadow-sm">Aktif</span></div><div className="mt-5 grid gap-4 sm:grid-cols-2">{policyFields.map(([field, label, helper]) => <label key={field} className="text-sm font-bold text-slate-700">{label}<input type="number" min="0" value={policy[field]} disabled={!canManage} onChange={(event) => setPolicies(policies.map((item, position) => position === index ? { ...item, [field]: Number(event.target.value) } : item))} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-slate-900 disabled:bg-slate-100" /><small className="mt-1 block font-normal text-slate-400">{field.includes('fine') ? `${helper} (${formatCurrency(policy[field])})` : helper}</small></label>)}</div>{canManage && <button disabled={busy === `policy-${policy.id}`} onClick={() => onSave(policy)} className="mt-5 min-h-11 w-full rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800 disabled:opacity-50">{busy === `policy-${policy.id}` ? 'Menyimpan…' : 'Simpan kebijakan'}</button>}</article> }
-function RolePermissions({ role, groups, busy, onToggle }) { const locked = role.name === 'super_admin'; return <section className="rounded-2xl border border-slate-200 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-black text-navy-950">{roleLabel(role.name)}</h3><p className="mt-1 text-xs text-slate-500">{role.permissions.length} hak akses aktif</p></div>{locked && <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">Akses penuh terkunci</span>}</div><div className="mt-5 grid gap-5 xl:grid-cols-2">{Object.entries(groups).map(([group, items]) => <div key={group} className="rounded-xl bg-slate-50 p-4"><p className="mb-3 text-xs font-black uppercase tracking-wider text-slate-500">{groupLabel(group)}</p><div className="flex flex-wrap gap-2">{items.map((permission) => { const active = role.permissions.some((item) => item.name === permission.name); return <button key={permission.id} disabled={locked || busy === `permission-${role.id}-${permission.name}`} onClick={() => onToggle(role, permission.name)} className={`min-h-9 rounded-lg border px-3 text-xs font-bold transition ${active ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500'} disabled:opacity-60`}>{permissionLabel(permission.name)}</button> })}</div></div>)}</div></section> }
+function PolicyCard({ policy, index, policies, setPolicies, canManage, busy, onSave }) { return <article className="rounded-2xl border border-slate-200 bg-slate-50/60 p-5"><div className="flex items-center justify-between"><div><p className="text-xs font-black uppercase tracking-wider text-blue-700">Tipe anggota</p><h3 className="mt-1 text-xl font-black text-navy-950">{memberLabel(policy.member_type)}</h3></div><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-500 shadow-sm">Aktif</span></div><div className="mt-5 grid gap-4 sm:grid-cols-2">{policyFields.map(([field, label, helper]) => <label key={field} className="text-sm font-bold text-slate-700">{label}<input type="number" min="0" value={policy[field]} disabled={!canManage} onChange={(event) => setPolicies(policies.map((item, position) => position === index ? { ...item, [field]: Number(event.target.value) } : item))} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-slate-900 disabled:bg-slate-100" /><small className="mt-1 block font-normal text-slate-400">{field.includes('fine') ? `${helper} (${formatCurrency(policy[field])})` : helper}</small></label>)}</div>{canManage && <button disabled={busy === `policy-${policy.id}`} onClick={() => onSave(policy)} className="mt-5 min-h-11 w-full rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800 disabled:opacity-50"><BusyLabel busy={busy === `policy-${policy.id}`} busyText="Menyimpan…">Simpan kebijakan</BusyLabel></button>}</article> }
+function RolePermissions({ role, groups, busy, onToggle }) { const locked = role.name === 'super_admin'; return <section className="rounded-2xl border border-slate-200 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-black text-navy-950">{roleLabel(role.name)}</h3><p className="mt-1 text-xs text-slate-500">{role.permissions.length} hak akses aktif</p></div>{locked && <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">Akses penuh terkunci</span>}</div><div className="mt-5 grid gap-5 xl:grid-cols-2">{Object.entries(groups).map(([group, items]) => <div key={group} className="rounded-xl bg-slate-50 p-4"><p className="mb-3 text-xs font-black uppercase tracking-wider text-slate-500">{groupLabel(group)}</p><div className="flex flex-wrap gap-2">{items.map((permission) => { const active = role.permissions.some((item) => item.name === permission.name); return <button key={permission.id} disabled={locked || busy === `permission-${role.id}-${permission.name}`} onClick={() => onToggle(role, permission.name)} className={`min-h-9 rounded-lg border px-3 text-xs font-bold transition ${active ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500'} disabled:opacity-60`}><span className="inline-flex items-center gap-1.5">{busy === `permission-${role.id}-${permission.name}` && <Spinner size={12} />}{permissionLabel(permission.name)}</span></button> })}</div></div>)}</div></section> }
 function memberLabel(value) { return value === 'student' ? 'Siswa' : value === 'staff' ? 'Staf & Guru' : value }
 function roleLabel(value) { return ({ super_admin: 'Super Admin', librarian: 'Admin Perpustakaan', staff: 'Staf', student: 'Siswa' })[value] ?? value }
 function groupLabel(value) { return ({ users: 'Anggota', roles: 'Role', academic: 'Akademik', catalog: 'Koleksi', circulation: 'Sirkulasi', loans: 'Pinjaman', fines: 'Denda', reports: 'Laporan', settings: 'Pengaturan', audit: 'Audit' })[value] ?? value }
