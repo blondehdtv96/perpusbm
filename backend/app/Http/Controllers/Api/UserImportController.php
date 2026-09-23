@@ -64,6 +64,7 @@ class UserImportController extends Controller
                 $rowNumber = $offset + 2;
                 $row = array_combine($headers, array_slice(array_pad($values, count($headers), null), 0, count($headers)));
                 $row = array_map(fn ($value) => $value === null || $value === '' ? null : trim((string) $value), $row);
+                $row['nis_nip'] = User::normalizeNisNip($row['nis_nip'] ?? null);
                 $validator = Validator::make($row, [
                     'name' => ['required', 'string', 'max:255'],
                     'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/'],

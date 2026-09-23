@@ -42,6 +42,38 @@ class MvpModulesTest extends TestCase
         $this->assertDatabaseCount('import_failures', 1);
     }
 
+    public function test_nis_nip_zero_is_treated_as_empty_and_skips_unique_validation(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+
+        foreach ([['siswa.nol1', '0'], ['siswa.nol2', 0], ['siswa.nol3', '00']] as [$username, $nisNip]) {
+            $this->actingAs($admin)->postJson('/api/users', [
+                'name' => 'Siswa Tanpa NIS',
+                'username' => $username,
+                'password' => 'password123',
+                'nis_nip' => $nisNip,
+                'member_type' => 'student',
+                'status' => 'active',
+                'role' => 'student',
+            ])->assertCreated()->assertJsonPath('data.nis_nip', null);
+            $this->assertDatabaseHas('users', ['username' => $username, 'nis_nip' => null]);
+        }
+
+        $csv = "name,username,nis_nip,member_type,class_or_position,password\n".
+            "Siswa Nol A,siswa.nol.csv1,0,student,X IPA 1,password123\n".
+            "Siswa Nol B,siswa.nol.csv2,0,student,X IPA 1,password123\n";
+
+        $this->actingAs($admin)->post('/api/imports/users', [
+            'file' => UploadedFile::fake()->createWithContent('anggota.csv', $csv),
+        ], ['Accept' => 'application/json'])
+            ->assertCreated()
+            ->assertJsonPath('data.failed_rows', 0)
+            ->assertJsonPath('data.success_rows', 2);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.nol.csv1', 'nis_nip' => null]);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.nol.csv2', 'nis_nip' => null]);
+    }
+
     public function test_import_never_fails_rows_because_of_duplicate_username_or_nis(): void
     {
         $this->seed();

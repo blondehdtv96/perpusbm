@@ -35,6 +35,20 @@ class User extends Authenticatable
         });
     }
 
+    /**
+     * NIS/NIP kosong atau yang hanya berisi angka nol (0, 00, ...) dianggap belum diisi,
+     * sehingga tidak ikut validasi unik dan disimpan sebagai null.
+     */
+    public static function normalizeNisNip(mixed $value): mixed
+    {
+        if (! is_null($value) && ! is_scalar($value)) {
+            return $value;
+        }
+        $value = trim((string) $value);
+
+        return $value === '' || trim($value, '0') === '' ? null : $value;
+    }
+
     public function loans(): HasMany
     {
         return $this->hasMany(Loan::class);

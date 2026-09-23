@@ -228,6 +228,10 @@ class UserController extends Controller
 
     private function validated(Request $request, ?User $user = null): array
     {
+        if ($request->has('nis_nip')) {
+            $request->merge(['nis_nip' => User::normalizeNisNip($request->input('nis_nip'))]);
+        }
+
         return $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/', Rule::unique('users')->ignore($user)],
