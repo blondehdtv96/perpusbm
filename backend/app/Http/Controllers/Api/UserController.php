@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 
 class UserController extends Controller
@@ -37,15 +38,25 @@ class UserController extends Controller
         $data = $this->validated($request);
         $role = $data['role'];
         unset($data['role']);
-        $user = DB::transaction(function () use ($data, $role): User {
-            $user = User::create($data);
-            $user->assignRole($role);
+        $archived = $this->archivedMemberFor($data);
+        $user = DB::transaction(function () use ($data, $role, $archived): User {
+            $user = $archived ?? new User;
+            if ($archived) {
+                $archived->restore();
+            }
+            $user->fill($data)->save();
+            $user->syncRoles([$role]);
 
             return $user;
         });
-        ActivityLogger::log($request, 'user.created', $user, $user->only('name', 'username', 'member_type', 'status'));
+        ActivityLogger::log($request, $archived ? 'user.restored' : 'user.created', $user, $user->only('name', 'username', 'member_type', 'status'));
 
-        return response()->json(['data' => $user->load('roles:id,name')], 201);
+        return response()->json([
+            'message' => $archived
+                ? 'Anggota ini pernah dihapus, datanya diaktifkan kembali dengan isian terbaru.'
+                : 'Anggota berhasil ditambahkan.',
+            'data' => $user->load('roles:id,name'),
+        ], 201);
     }
 
     public function show(User $user): JsonResponse
@@ -61,6 +72,7 @@ class UserController extends Controller
         if (empty($data['password'])) {
             unset($data['password']);
         }
+        $this->guardArchivedConflicts($data, $user);
         $user->update($data);
         $user->syncRoles([$role]);
         ActivityLogger::log($request, 'user.updated', $user, $user->only('name', 'username', 'member_type', 'status'));
@@ -226,17 +238,72 @@ class UserController extends Controller
         }
     }
 
+    /**
+     * Anggota yang pernah dihapus dan boleh dipakai ulang oleh isian form ini:
+     * dicocokkan lewat NIS/NIP, atau lewat username selama NIS/NIP-nya tidak bentrok.
+     * Konsisten dengan perilaku import anggota yang memulihkan data lama.
+     */
+    private function archivedMemberFor(array $data): ?User
+    {
+        $nisNip = $data['nis_nip'] ?? null;
+        $archived = $nisNip !== null ? User::onlyTrashed()->where('nis_nip', $nisNip)->first() : null;
+
+        if (! $archived) {
+            $byUsername = User::onlyTrashed()->where('username', $data['username'])->first();
+            if ($byUsername && ($byUsername->nis_nip === null || $byUsername->nis_nip === $nisNip)) {
+                $archived = $byUsername;
+            }
+        }
+
+        $this->guardArchivedConflicts($data, $archived);
+
+        return $archived;
+    }
+
+    /**
+     * Username dan NIS/NIP tetap unik pada level basis data termasuk baris terhapus,
+     * jadi bentrok dengan anggota di arsip dilaporkan dengan pesan yang jelas.
+     */
+    private function guardArchivedConflicts(array $data, ?User $allowed = null): void
+    {
+        $candidates = [
+            'username' => $data['username'] ?? null,
+            'nis_nip' => $data['nis_nip'] ?? null,
+        ];
+        $errors = [];
+
+        foreach ($candidates as $column => $value) {
+            if ($value === null) {
+                continue;
+            }
+            $conflict = User::onlyTrashed()->where($column, $value)
+                ->when($allowed?->exists, fn ($query) => $query->whereKeyNot($allowed->getKey()))
+                ->first();
+            if ($conflict) {
+                $label = $column === 'username' ? 'Username' : 'NIS/NIP';
+                $errors[$column] = "{$label} {$value} masih tercatat pada anggota terhapus \"{$conflict->name}\". Gunakan {$label} lain atau tambahkan anggota tersebut kembali dengan NIS/NIP yang sama.";
+            }
+        }
+
+        if ($errors) {
+            throw ValidationException::withMessages($errors);
+        }
+    }
+
     private function validated(Request $request, ?User $user = null): array
     {
         if ($request->has('nis_nip')) {
             $request->merge(['nis_nip' => User::normalizeNisNip($request->input('nis_nip'))]);
         }
+        if (is_string($request->input('username'))) {
+            $request->merge(['username' => trim($request->input('username'))]);
+        }
 
         return $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/', Rule::unique('users')->ignore($user)],
+            'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/', Rule::unique('users')->ignore($user)->withoutTrashed()],
             'password' => [$user ? 'nullable' : 'required', 'string', 'min:8'],
-            'nis_nip' => ['nullable', 'string', 'max:100', Rule::unique('users')->ignore($user)],
+            'nis_nip' => ['nullable', 'string', 'max:100', Rule::unique('users')->ignore($user)->withoutTrashed()],
             'member_type' => ['required', Rule::in(['student', 'staff'])],
             'class_or_position' => ['nullable', 'string', 'max:255'],
             'status' => ['required', Rule::in(['active', 'suspended', 'inactive'])],

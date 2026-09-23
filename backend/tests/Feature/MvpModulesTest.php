@@ -42,6 +42,84 @@ class MvpModulesTest extends TestCase
         $this->assertDatabaseCount('import_failures', 1);
     }
 
+    public function test_manual_member_validation_returns_readable_indonesian_messages(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        User::factory()->create(['username' => 'siswa.ada', 'nis_nip' => '3001', 'member_type' => 'student']);
+
+        $response = $this->actingAs($admin)->postJson('/api/users', [
+            'name' => 'Siswa Baru',
+            'username' => 'siswa baru',
+            'password' => 'password123',
+            'nis_nip' => '3001',
+            'member_type' => 'student',
+            'status' => 'active',
+            'role' => 'student',
+        ]);
+
+        $response->assertStatus(422);
+        $messages = collect($response->json('errors'))->flatten()->all();
+        $this->assertNotEmpty($messages);
+        foreach ($messages as $message) {
+            $this->assertStringNotContainsString('validation.', $message, 'Pesan validasi harus diterjemahkan, bukan kunci mentah.');
+        }
+        $this->assertStringContainsString('Username hanya boleh berisi', $response->json('errors.username.0'));
+        $this->assertStringContainsString('NIS/NIP ini sudah dipakai', $response->json('errors.nis_nip.0'));
+    }
+
+    public function test_adding_member_reuses_account_that_was_deleted_before(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $deleted = User::factory()->create(['name' => 'Nama Lama', 'username' => 'siswa.lama', 'nis_nip' => '4001', 'member_type' => 'student']);
+        $deleted->assignRole('student');
+        $deleted->delete();
+
+        $this->actingAs($admin)->postJson('/api/users', [
+            'name' => 'Nama Baru',
+            'username' => 'siswa.baru',
+            'password' => 'password123',
+            'nis_nip' => '4001',
+            'member_type' => 'student',
+            'class_or_position' => 'XI IPA 1',
+            'status' => 'active',
+            'role' => 'student',
+        ])->assertCreated()->assertJsonPath('data.id', $deleted->id);
+
+        $this->assertDatabaseHas('users', [
+            'id' => $deleted->id,
+            'username' => 'siswa.baru',
+            'nis_nip' => '4001',
+            'name' => 'Nama Baru',
+            'status' => 'active',
+            'deleted_at' => null,
+        ]);
+        $this->assertSame(1, User::withTrashed()->where('nis_nip', '4001')->count());
+    }
+
+    public function test_conflict_with_deleted_account_is_explained_instead_of_generic_unique_error(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $deleted = User::factory()->create(['name' => 'Anggota Arsip', 'username' => 'siswa.arsip', 'nis_nip' => '5001', 'member_type' => 'student']);
+        $deleted->delete();
+
+        $response = $this->actingAs($admin)->postJson('/api/users', [
+            'name' => 'Siswa Lain',
+            'username' => 'siswa.arsip',
+            'password' => 'password123',
+            'nis_nip' => '5002',
+            'member_type' => 'student',
+            'status' => 'active',
+            'role' => 'student',
+        ]);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('anggota terhapus "Anggota Arsip"', $response->json('errors.username.0'));
+        $this->assertDatabaseMissing('users', ['nis_nip' => '5002']);
+    }
+
     public function test_nis_nip_zero_is_treated_as_empty_and_skips_unique_validation(): void
     {
         $this->seed();

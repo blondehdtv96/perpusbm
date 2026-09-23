@@ -16,6 +16,12 @@ function optionLabel(options, value) {
   return options.find(([key]) => key === value)?.[1] ?? value
 }
 
+// Error validasi (422) membawa pesan per field; tampilkan semuanya, bukan hanya ringkasan "…and 1 more error".
+function errorLines(reason) {
+  const lines = Object.values(reason?.errors ?? {}).flat().filter(Boolean)
+  return lines.length > 0 ? lines : (reason?.message ?? 'Terjadi kesalahan.')
+}
+
 function roleLabel(role) {
   return ({ student: 'Siswa', staff: 'Staf', librarian: 'Pustakawan', super_admin: 'Super Admin' })[role] ?? role
 }
@@ -40,6 +46,7 @@ export default function UsersPage() {
   const [downloadingTemplate, setDownloadingTemplate] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [formErrors, setFormErrors] = useState({})
   const [busy, setBusy] = useState(false)
   const [rowBusy, setRowBusy] = useState(null)
   const [importProgress, setImportProgress] = useState(null)
@@ -77,12 +84,17 @@ export default function UsersPage() {
     event.preventDefault()
     setBusy(true)
     setError('')
+    setMessage('')
+    setFormErrors({})
     try {
-      await api('/api/users', { method: 'POST', body: JSON.stringify(form) })
+      const response = await api('/api/users', { method: 'POST', body: JSON.stringify(form) })
       setForm(initialForm)
-      setMessage('Anggota berhasil ditambahkan.')
+      setMessage(response?.message ?? 'Anggota berhasil ditambahkan.')
       await load()
-    } catch (reason) { setError(reason.message) } finally { setBusy(false) }
+    } catch (reason) {
+      setFormErrors(reason.errors ?? {})
+      setError(errorLines(reason))
+    } finally { setBusy(false) }
   }
 
   const selectImportFile = (file) => {
@@ -233,17 +245,17 @@ export default function UsersPage() {
   return <div className="space-y-6">
     <PageHeader eyebrow="Administrasi" title="Anggota" description="Kelola akun, status, dan impor data anggota dengan lebih mudah." />
     {message && <Feedback type="success">{message}</Feedback>}
-    {error && <Feedback type="error">{error}</Feedback>}
+    {error && <Feedback type="error">{Array.isArray(error) ? <ul className="list-disc space-y-1 pl-5">{error.map((line, index) => <li key={index}>{line}</li>)}</ul> : error}</Feedback>}
 
     {canCreate && <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(20rem,1fr)]">
       <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6"><div><h2 className="text-lg font-black text-navy-950">Tambah anggota</h2><p className="mt-1 text-sm text-slate-500">Tambahkan satu anggota secara manual.</p></div><form onSubmit={create} className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <Field label="Nama" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required />
-        <Field label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} required />
-        <Field label="NIS/NIP" value={form.nis_nip} onChange={(value) => setForm({ ...form, nis_nip: value })} />
-        <Field label="Kelas/Jabatan" value={form.class_or_position} onChange={(value) => setForm({ ...form, class_or_position: value })} />
+        <Field label="Nama" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required error={formErrors.name?.[0]} />
+        <Field label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value.replace(/\s+/g, '') })} required minLength="3" hint="Huruf, angka, titik, garis bawah, dan strip. Tanpa spasi." error={formErrors.username?.[0]} />
+        <Field label="NIS/NIP" value={form.nis_nip} onChange={(value) => setForm({ ...form, nis_nip: value })} hint="Boleh dikosongkan bila belum ada." error={formErrors.nis_nip?.[0]} />
+        <Field label="Kelas/Jabatan" value={form.class_or_position} onChange={(value) => setForm({ ...form, class_or_position: value })} error={formErrors.class_or_position?.[0]} />
         <Select label="Tipe" value={form.member_type} onChange={(value) => setForm({ ...form, member_type: value, role: value })} options={memberTypes} />
         <Select label="Role" value={form.role} onChange={(value) => setForm({ ...form, role: value })} options={[['student', 'Siswa'], ['staff', 'Staf'], ['librarian', 'Pustakawan'], ['super_admin', 'Super Admin']]} />
-        <Field label="Password awal" type="password" value={form.password} onChange={(value) => setForm({ ...form, password: value })} required minLength="8" />
+        <Field label="Password awal" type="password" value={form.password} onChange={(value) => setForm({ ...form, password: value })} required minLength="8" hint="Minimal 8 karakter." error={formErrors.password?.[0]} />
         <button disabled={busy} className="min-h-11 self-end rounded-xl bg-blue-700 px-4 font-bold text-white hover:bg-blue-800 disabled:opacity-60"><BusyLabel busy={busy} busyText="Menyimpan…">Simpan anggota</BusyLabel></button>
       </form></section>
 
@@ -278,8 +290,11 @@ export default function UsersPage() {
   </div>
 }
 
-function Field({ label, value, onChange, type = 'text', required = false, minLength }) {
-  return <label className="text-sm font-bold">{label}<input type={type} value={value} required={required} minLength={minLength} onChange={(event) => onChange(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3 font-normal outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label>
+function Field({ label, value, onChange, type = 'text', required = false, minLength, hint, error }) {
+  return <label className="text-sm font-bold">{label}
+    <input type={type} value={value} required={required} minLength={minLength} aria-invalid={error ? 'true' : undefined} onChange={(event) => onChange(event.target.value)} className={`mt-1 min-h-11 w-full rounded-xl border px-3 font-normal outline-none focus:ring-4 ${error ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : 'border-slate-300 focus:border-blue-600 focus:ring-blue-100'}`} />
+    {error ? <span className="mt-1 block text-xs font-semibold text-red-600">{error}</span> : hint && <span className="mt-1 block text-xs font-normal text-slate-500">{hint}</span>}
+  </label>
 }
 
 function Select({ label, value, onChange, options }) {
