@@ -50,6 +50,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
     Route::post('/users', [UserController::class, 'store'])->middleware('permission:users.create');
+    Route::get('/users/stats', [UserController::class, 'stats'])->middleware('permission:users.view');
     Route::post('/users/cards/print', [UserController::class, 'printCards'])->middleware('permission:users.view');
     Route::post('/users/bulk-delete', [UserController::class, 'bulkDestroy'])->middleware('permission:users.delete');
     Route::get('/users/{user}', [UserController::class, 'show'])->middleware('permission:users.view');

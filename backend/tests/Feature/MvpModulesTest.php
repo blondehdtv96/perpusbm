@@ -9,12 +9,37 @@ use App\Models\Loan;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class MvpModulesTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_user_stats_match_database_and_ignore_list_filters(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        User::factory()->count(3)->create(['member_type' => 'student', 'status' => 'active']);
+        User::factory()->create(['member_type' => 'staff', 'status' => 'suspended']);
+        User::factory()->create(['member_type' => 'student', 'status' => 'active'])->delete();
+
+        $response = $this->actingAs($admin)->getJson('/api/users/stats')->assertOk();
+
+        $response->assertJsonPath('data.total', User::count())
+            ->assertJsonPath('data.students', User::where('member_type', 'student')->count())
+            ->assertJsonPath('data.staff', User::where('member_type', 'staff')->count())
+            ->assertJsonPath('data.active', User::where('status', 'active')->count())
+            ->assertJsonPath('data.suspended', User::where('status', 'suspended')->count())
+            ->assertJsonPath('data.inactive', User::where('status', 'inactive')->count())
+            ->assertJsonPath('data.archived', 1);
+
+        // Anggota terhapus tidak dihitung, dan filter pada daftar tidak mengubah total.
+        $this->assertSame(User::count() + 1, (int) DB::table('users')->count());
+        $this->actingAs($admin)->getJson('/api/users?member_type=staff')->assertOk();
+        $this->actingAs($admin)->getJson('/api/users/stats')->assertOk()->assertJsonPath('data.total', User::count());
+    }
 
     public function test_member_cannot_access_user_management(): void
     {

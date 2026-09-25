@@ -33,6 +33,32 @@ class UserController extends Controller
         return response()->json($users);
     }
 
+    /**
+     * Ringkasan jumlah anggota apa adanya dari basis data: dihitung ulang lewat satu
+     * query agregat sehingga tidak terpengaruh filter maupun paginasi daftar anggota.
+     */
+    public function stats(): JsonResponse
+    {
+        $counts = User::query()
+            ->selectRaw('COUNT(*) as total')
+            ->selectRaw("SUM(CASE WHEN member_type = 'student' THEN 1 ELSE 0 END) as students")
+            ->selectRaw("SUM(CASE WHEN member_type = 'staff' THEN 1 ELSE 0 END) as staff")
+            ->selectRaw("SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active")
+            ->selectRaw("SUM(CASE WHEN status = 'suspended' THEN 1 ELSE 0 END) as suspended")
+            ->selectRaw("SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END) as inactive")
+            ->first();
+
+        return response()->json(['data' => [
+            'total' => (int) $counts->total,
+            'students' => (int) $counts->students,
+            'staff' => (int) $counts->staff,
+            'active' => (int) $counts->active,
+            'suspended' => (int) $counts->suspended,
+            'inactive' => (int) $counts->inactive,
+            'archived' => User::onlyTrashed()->count(),
+        ]]);
+    }
+
     public function store(Request $request): JsonResponse
     {
         $data = $this->validated($request);

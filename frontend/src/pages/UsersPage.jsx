@@ -22,6 +22,15 @@ function errorLines(reason) {
   return lines.length > 0 ? lines : (reason?.message ?? 'Terjadi kesalahan.')
 }
 
+async function requestStats() {
+  try {
+    const response = await api('/api/users/stats')
+    return response.data ?? null
+  } catch {
+    return null
+  }
+}
+
 function roleLabel(role) {
   return ({ student: 'Siswa', staff: 'Staf', librarian: 'Pustakawan', super_admin: 'Super Admin' })[role] ?? role
 }
@@ -33,6 +42,8 @@ export default function UsersPage() {
   const canDelete = permissions.includes('users.delete')
   const fileInputRef = useRef(null)
   const [users, setUsers] = useState([])
+  const [stats, setStats] = useState(null)
+  const [statsLoading, setStatsLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [memberType, setMemberType] = useState('')
   const [status, setStatus] = useState('')
@@ -75,10 +86,23 @@ export default function UsersPage() {
     }
   }, [memberType, page, search, status])
 
+  // Kartu ringkasan memakai hasil hitung ulang dari server, jadi angkanya tidak ikut
+  // berubah saat daftar difilter dan tetap sama dengan jumlah baris di basis data.
+  const refresh = useCallback(async () => {
+    const [, summary] = await Promise.all([load(), requestStats()])
+    setStats((current) => summary ?? current)
+  }, [load])
+
   useEffect(() => {
     const timer = setTimeout(load, 250)
     return () => clearTimeout(timer)
   }, [load])
+
+  useEffect(() => {
+    let mounted = true
+    requestStats().then((summary) => { if (mounted) { setStats(summary); setStatsLoading(false) } })
+    return () => { mounted = false }
+  }, [])
 
   const create = async (event) => {
     event.preventDefault()
@@ -90,7 +114,7 @@ export default function UsersPage() {
       const response = await api('/api/users', { method: 'POST', body: JSON.stringify(form) })
       setForm(initialForm)
       setMessage(response?.message ?? 'Anggota berhasil ditambahkan.')
-      await load()
+      await refresh()
     } catch (reason) {
       setFormErrors(reason.errors ?? {})
       setError(errorLines(reason))
@@ -135,7 +159,7 @@ export default function UsersPage() {
       setMessage(`Impor selesai: ${response.data.success_rows} anggota baru, ${response.data.updated_rows ?? 0} diperbarui, dan ${response.data.failed_rows} gagal.`)
       setImportFile(null)
       if (fileInputRef.current) fileInputRef.current.value = ''
-      await load()
+      await refresh()
     } catch (reason) { setError(reason.message) } finally { setBusy(false); setImportProgress(null) }
   }
 
@@ -168,7 +192,7 @@ export default function UsersPage() {
         }),
       })
       setMessage(`Status ${user.name} berhasil diubah menjadi ${optionLabel(statuses, nextStatus).toLowerCase()}.`)
-      await load()
+      await refresh()
     } catch (reason) { setError(reason.message) } finally { setRowBusy(null) }
   }
 
@@ -218,7 +242,7 @@ export default function UsersPage() {
       await api(`/api/users/${user.id}`, { method: 'DELETE' })
       setSelected((items) => items.filter((id) => id !== user.id))
       setMessage(`${user.name} berhasil dihapus.`)
-      await load()
+      await refresh()
     } catch (reason) { setError(reason.message) } finally { setRowBusy(null) }
   }
 
@@ -233,7 +257,7 @@ export default function UsersPage() {
       setSelected(skipped.map((item) => item.id))
       if (deleted.length) setMessage(`${deleted.length} anggota berhasil dihapus.${skipped.length ? ` ${skipped.length} anggota dilewati.` : ''}`)
       if (skipped.length) setError(skipped.map((item) => `${item.name}: ${item.reason}`).join(' '))
-      await load()
+      await refresh()
     } catch (reason) { setError(reason.message) } finally { setBulkDeleting(false) }
   }
 
@@ -246,6 +270,17 @@ export default function UsersPage() {
     <PageHeader eyebrow="Administrasi" title="Anggota" description="Kelola akun, status, dan impor data anggota dengan lebih mudah." />
     {message && <Feedback type="success">{message}</Feedback>}
     {error && <Feedback type="error">{Array.isArray(error) ? <ul className="list-disc space-y-1 pl-5">{error.map((line, index) => <li key={index}>{line}</li>)}</ul> : error}</Feedback>}
+
+    <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" aria-label="Ringkasan jumlah anggota">
+      {statsLoading && !stats
+        ? [...Array(4)].map((_, index) => <div key={index} className="h-32 animate-pulse rounded-3xl border border-slate-200 bg-white p-5" />)
+        : <>
+          <StatCard tone="blue" icon="users" label="Total anggota terdaftar" value={stats?.total} helper="Seluruh akun anggota aktif di basis data" />
+          <StatCard icon="student" label="Siswa" value={stats?.students} helper={percentHelper(stats?.students, stats?.total)} />
+          <StatCard icon="staff" label="Staf" value={stats?.staff} helper={percentHelper(stats?.staff, stats?.total)} />
+          <StatCard tone="emerald" icon="check" label="Anggota aktif" value={stats?.active} helper={`${stats?.suspended ?? 0} ditangguhkan • ${stats?.inactive ?? 0} tidak aktif`} />
+        </>}
+    </section>
 
     {canCreate && <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(20rem,1fr)]">
       <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6"><div><h2 className="text-lg font-black text-navy-950">Tambah anggota</h2><p className="mt-1 text-sm text-slate-500">Tambahkan satu anggota secara manual.</p></div><form onSubmit={create} className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -275,7 +310,7 @@ export default function UsersPage() {
 
     {importResult && <section className="mt-5 rounded-3xl border border-slate-200 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-black">Hasil import</h2><p className="text-sm text-slate-500">{importResult.filename}</p></div><span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">Selesai</span></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded-2xl bg-slate-50 p-4 text-center"><p className="text-2xl font-black">{importResult.total_rows}</p><p className="text-xs text-slate-500">Total baris</p></div><div className="rounded-2xl bg-emerald-50 p-4 text-center"><p className="text-2xl font-black text-emerald-700">{importResult.success_rows}</p><p className="text-xs text-emerald-700">Anggota baru</p></div><div className="rounded-2xl bg-blue-50 p-4 text-center"><p className="text-2xl font-black text-blue-700">{importResult.updated_rows ?? 0}</p><p className="text-xs text-blue-700">Diperbarui</p></div><div className="rounded-2xl bg-red-50 p-4 text-center"><p className="text-2xl font-black text-red-700">{importResult.failed_rows}</p><p className="text-xs text-red-700">Gagal</p></div></div>{importResult.notes?.length > 0 && <details className="mt-4 overflow-hidden rounded-2xl border border-blue-200"><summary className="cursor-pointer bg-blue-50 px-4 py-3 font-bold text-blue-800">Lihat catatan penyesuaian data ({importResult.notes.length})</summary><div className="max-h-72 divide-y divide-blue-100 overflow-y-auto">{importResult.notes.map((note, index) => <div key={index} className="p-4 text-sm"><p className="font-bold text-slate-900">Baris {note.row_number}{note.username ? ` • ${note.username}` : ''}</p><p className="mt-1 text-slate-600">{note.message}</p></div>)}</div></details>}{importResult.failures?.length > 0 && <details className="mt-4 overflow-hidden rounded-2xl border border-red-200"><summary className="cursor-pointer bg-red-50 px-4 py-3 font-bold text-red-800">Lihat baris yang gagal ({importResult.failures.length})</summary><div className="max-h-72 divide-y divide-red-100 overflow-y-auto">{importResult.failures.map((failure) => <div key={failure.id} className="p-4 text-sm"><p className="font-bold text-slate-900">Baris {failure.row_number}: {failure.row_data?.name ?? failure.row_data?.username ?? 'Data tidak valid'}</p><ul className="mt-1 list-disc pl-5 text-red-700">{Object.values(failure.errors ?? {}).flat().map((item, index) => <li key={index}>{item}</li>)}</ul></div>)}</div></details>}</section>}
 
-    <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm"><LoadingOverlay show={Boolean(rowBusy) || bulkDeleting || printingCards} label={printingCards ? 'Menyiapkan kartu anggota…' : 'Memperbarui data anggota…'} /><div className="border-b border-slate-200 p-5 sm:p-6"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-3"><h2 className="text-xl font-black text-navy-950">Daftar anggota</h2><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{pagination.total} data</span></div><p className="mt-1 text-sm text-slate-500">Cari dan kelola akun anggota perpustakaan.</p></div><div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row"><button type="button" onClick={() => togglePage(!allPageSelected)} disabled={users.length === 0 || loading || printingCards || bulkDeleting} className="min-h-11 rounded-xl border border-blue-200 px-4 text-sm font-bold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40">{allPageSelected ? 'Batalkan halaman' : 'Pilih halaman ini'}</button><button type="button" onClick={printCards} disabled={selected.length === 0 || loading || printingCards || bulkDeleting} className="min-h-11 rounded-xl bg-blue-700 px-5 text-sm font-bold text-white shadow-sm hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-40"><BusyLabel busy={printingCards} busyText="Membuat PDF…">{`Cetak kartu (${selected.length})`}</BusyLabel></button></div></div></div>
+    <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm"><LoadingOverlay show={Boolean(rowBusy) || bulkDeleting || printingCards} label={printingCards ? 'Menyiapkan kartu anggota…' : 'Memperbarui data anggota…'} /><div className="border-b border-slate-200 p-5 sm:p-6"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-3"><h2 className="text-xl font-black text-navy-950">Daftar anggota</h2><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{pagination.total} hasil pencarian</span></div><p className="mt-1 text-sm text-slate-500">Cari dan kelola akun anggota perpustakaan.</p></div><div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row"><button type="button" onClick={() => togglePage(!allPageSelected)} disabled={users.length === 0 || loading || printingCards || bulkDeleting} className="min-h-11 rounded-xl border border-blue-200 px-4 text-sm font-bold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40">{allPageSelected ? 'Batalkan halaman' : 'Pilih halaman ini'}</button><button type="button" onClick={printCards} disabled={selected.length === 0 || loading || printingCards || bulkDeleting} className="min-h-11 rounded-xl bg-blue-700 px-5 text-sm font-bold text-white shadow-sm hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-40"><BusyLabel busy={printingCards} busyText="Membuat PDF…">{`Cetak kartu (${selected.length})`}</BusyLabel></button></div></div></div>
       <div className="grid gap-3 border-b border-slate-200 bg-slate-50/70 p-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_12rem_12rem] sm:p-5"><label className="sm:col-span-2 lg:col-span-1"><span className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">Pencarian</span><input type="search" value={search} onChange={resetPage(setSearch)} placeholder="Nama, username, atau NIS/NIP" className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-4 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100" /></label><label><span className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">Tipe anggota</span><select value={memberType} onChange={resetPage(setMemberType)} className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100"><option value="">Semua tipe</option>{memberTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-500">Status</span><select value={status} onChange={resetPage(setStatus)} className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100"><option value="">Semua status</option>{statuses.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
 
       {selected.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-blue-100 bg-blue-50 px-4 py-3 text-sm sm:px-5"><div><p className="font-bold text-blue-900">{selected.length} anggota dipilih</p><p className="text-xs text-blue-700">Maksimal 100 anggota dalam sekali cetak atau hapus.</p></div><div className="flex flex-wrap gap-2">{canDelete && <button type="button" onClick={removeSelected} disabled={printingCards || bulkDeleting} className="min-h-10 rounded-xl border border-red-200 bg-white px-3 font-bold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"><BusyLabel busy={bulkDeleting} busyText="Menghapus…">{`Hapus semua (${selected.length})`}</BusyLabel></button>}<button type="button" onClick={() => setSelected([])} disabled={printingCards || bulkDeleting} className="min-h-10 rounded-xl px-3 font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-40">Batalkan pilihan</button></div></div>}
@@ -288,6 +323,44 @@ export default function UsersPage() {
       {!loading && pagination.last > 1 && <nav aria-label="Navigasi halaman anggota" className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-4 sm:px-6"><button type="button" disabled={pagination.current <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="min-h-10 rounded-xl border border-slate-300 px-3 text-sm font-bold text-slate-700 disabled:opacity-40 sm:px-4">Sebelumnya</button><p className="text-center text-xs font-semibold text-slate-500 sm:text-sm">Halaman {pagination.current} dari {pagination.last}</p><button type="button" disabled={pagination.current >= pagination.last} onClick={() => setPage((value) => Math.min(pagination.last, value + 1))} className="min-h-10 rounded-xl border border-slate-300 px-3 text-sm font-bold text-slate-700 disabled:opacity-40 sm:px-4">Berikutnya</button></nav>}
     </section>
   </div>
+}
+
+function percentHelper(part, total) {
+  if (!total || part === undefined || part === null) return 'Belum ada data'
+  return `${Math.round((part / total) * 100)}% dari total anggota`
+}
+
+function StatCard({ label, value, helper, icon, tone = 'neutral' }) {
+  const tones = {
+    neutral: 'border-slate-200 bg-white',
+    blue: 'border-blue-100 bg-blue-50',
+    emerald: 'border-emerald-100 bg-emerald-50',
+  }
+  const iconTones = {
+    neutral: 'bg-slate-100 text-slate-600',
+    blue: 'bg-blue-100 text-blue-700',
+    emerald: 'bg-emerald-100 text-emerald-700',
+  }
+  return <article className={`rounded-3xl border p-5 shadow-sm shadow-slate-900/[.02] ${tones[tone]}`}>
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-xs font-bold text-slate-500">{label}</p>
+        <p className="mt-2 text-3xl font-black tracking-tight text-navy-950">{value ?? '–'}</p>
+      </div>
+      <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${iconTones[tone]}`}><StatIcon name={icon} /></span>
+    </div>
+    <p className="mt-3 truncate text-[11px] text-slate-500">{helper}</p>
+  </article>
+}
+
+function StatIcon({ name }) {
+  const paths = {
+    users: 'M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm8-1a4 4 0 0 1 0 7',
+    student: 'M3 9l9-4 9 4-9 4-9-4Zm4 6v3c0 1 2.2 2 5 2s5-1 5-2v-3',
+    staff: 'M4 20v-1a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
+    check: 'm5 12 4 4L19 6',
+  }
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name] ?? paths.users} /></svg>
 }
 
 function Field({ label, value, onChange, type = 'text', required = false, minLength, hint, error }) {
