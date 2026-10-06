@@ -576,7 +576,7 @@ class UserImportController extends Controller
 
         return response()->streamDownload(function () use ($levels, $majors, $classes): void {
             $spreadsheet = new Spreadsheet;
-            $this->buildDataSheet($spreadsheet->getActiveSheet(), $classes->count());
+            $this->buildDataSheet($spreadsheet->getActiveSheet());
             $this->buildMasterSheet($spreadsheet->createSheet(), $classes, $levels, $majors);
             $this->buildGuideSheet($spreadsheet->createSheet());
             $this->buildExampleSheet($spreadsheet->createSheet(), $classes, $levels, $majors);
@@ -588,7 +588,7 @@ class UserImportController extends Controller
         ]);
     }
 
-    private function buildDataSheet(Worksheet $sheet, int $classCount): void
+    private function buildDataSheet(Worksheet $sheet): void
     {
         $lastRow = 1000;
         $sheet->setTitle('Data Anggota');
@@ -622,29 +622,24 @@ class UserImportController extends Controller
             ->setFormula1('"student,staff"');
         $sheet->setDataValidation("D2:D{$lastRow}", $type);
 
-        // Kolom kelas boleh ditulis bebas: daftar kelas aktif hanya ditawarkan sebagai bantuan,
-        // jadi validasinya memakai gaya peringatan dan tetap menerima kelas yang belum terdaftar.
-        if ($classCount > 0) {
-            $kelas = new DataValidation;
-            $kelas->setType(DataValidation::TYPE_LIST)
-                ->setErrorStyle(DataValidation::STYLE_WARNING)
-                ->setAllowBlank(true)
-                ->setShowDropDown(true)
-                ->setShowErrorMessage(true)
-                ->setShowInputMessage(true)
-                ->setPromptTitle('Kelas siswa')
-                ->setPrompt('Pilih dari daftar atau tulis sendiri, contoh: 10 TKJ A. Kosongkan untuk staf.')
-                ->setErrorTitle('Kelas belum terdaftar')
-                ->setError('Kelas ini belum ada pada master akademik. Pilih Ya untuk tetap memakainya; kelasnya akan dibuat otomatis saat import.')
-                ->setFormula1('Master!$A$2:$A$'.($classCount + 1));
-            $sheet->setDataValidation("E2:E{$lastRow}", $kelas);
-        }
+        // Kolom kelas sengaja tanpa daftar pilihan supaya petugas bisa mengetik langsung dan
+        // menyalin-tempel satu kolom sekaligus. Yang tersisa hanya pesan bantuan saat sel dipilih;
+        // isinya baru diperiksa saat import, termasuk kelas yang belum ada di master akademik.
+        $kelas = new DataValidation;
+        $kelas->setType(DataValidation::TYPE_NONE)
+            ->setAllowBlank(true)
+            ->setShowDropDown(false)
+            ->setShowErrorMessage(false)
+            ->setShowInputMessage(true)
+            ->setPromptTitle('Kelas siswa')
+            ->setPrompt('Ketik bebas, contoh: 10 TKJ A. Daftar kelas aktif ada di sheet Master sebagai referensi. Kosongkan untuk staf.');
+        $sheet->setDataValidation("E2:E{$lastRow}", $kelas);
     }
 
     private function buildMasterSheet(Worksheet $sheet, Collection $classes, array $levels, Collection $majors): void
     {
         $sheet->setTitle('Master');
-        $sheet->fromArray(['kelas aktif (pilih atau tulis sendiri)', 'tingkat', 'kode jurusan', 'nama jurusan'], null, 'A1');
+        $sheet->fromArray(['kelas aktif (referensi, boleh ditulis sendiri)', 'tingkat', 'kode jurusan', 'nama jurusan'], null, 'A1');
         $sheet->fromArray($classes->map(fn (string $name) => [$name])->all(), null, 'A2');
         $sheet->fromArray(array_map(fn (string $level) => [$level], $levels), null, 'B2');
         $sheet->fromArray($majors->map(fn ($major) => [$major->code, $major->name])->all(), null, 'C2');
@@ -671,7 +666,7 @@ class UserImportController extends Controller
             ['4', 'Kolom wajib untuk semua anggota: name, username, member_type, dan password.'],
             ['5', 'member_type dipilih dari dropdown: student atau staff.'],
             ['6', 'Untuk student: tulis kelas pada SATU kolom kelas, contoh: 10 TKJ A. Tidak perlu lagi dipisah per tingkat dan jurusan.'],
-            ['7', 'Penulisannya bebas. "X TKJ 1", "10-TKJ-A", dan "Kelas 10 Teknik Komputer dan Jaringan A" semuanya terbaca.'],
+            ['7', 'Kolom kelas diketik manual tanpa dropdown, jadi bisa disalin-tempel sekaligus. Penulisannya bebas: "X TKJ 1", "10-TKJ-A", dan "Kelas 10 Teknik Komputer dan Jaringan A" semuanya terbaca.'],
             ['8', 'Urutannya tingkat, lalu jurusan, lalu rombel. Tingkat boleh angka atau Romawi; jurusan boleh kode atau nama lengkap.'],
             ['9', 'Tingkat, jurusan, atau rombel yang belum terdaftar dibuatkan otomatis pada tahun ajaran aktif dan dicatat di hasil import.'],
             ['10', 'Karena dibuat otomatis, periksa ejaan kelas sebelum mengunggah agar master akademik tidak terisi data salah tulis.'],
@@ -681,7 +676,7 @@ class UserImportController extends Controller
             ['14', 'Username, NIS/NIP, kelas, dan password diformat sebagai teks agar format aslinya dipertahankan.'],
             ['15', 'Baris dengan username atau NIS/NIP yang sudah terdaftar tidak gagal: data anggota lama diperbarui dan password lamanya tetap berlaku.'],
             ['16', 'Jika username sudah dipakai anggota lain, sistem menambahkan angka di belakangnya dan mencatatnya di hasil import.'],
-            ['17', 'Sheet Master dan Contoh hanya panduan dan tidak akan diimpor.'],
+            ['17', 'Sheet Master hanya referensi daftar kelas aktif, tidak wajib diikuti. Sheet Master dan Contoh tidak akan diimpor.'],
             ['', 'Simpan sebagai XLSX, lalu unggah melalui halaman Anggota. Maksimal 5 MB.'],
         ], null, 'A1');
         $sheet->mergeCells('A1:B1');
