@@ -15,6 +15,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 use Tests\TestCase;
 
 class MvpModulesTest extends TestCase
@@ -69,6 +70,39 @@ class MvpModulesTest extends TestCase
         $response->assertCreated()->assertJsonPath('data.success_rows', 1)->assertJsonPath('data.failed_rows', 1);
         $this->assertDatabaseHas('users', ['username' => 'siswa.valid', 'member_type' => 'student']);
         $this->assertDatabaseCount('import_failures', 1);
+    }
+
+    public function test_import_reads_class_written_freely_in_one_column(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $csv = "name,username,nis_nip,member_type,kelas,jabatan,password\n".
+            "Siswa Spasi,siswa.spasi,5001,student,10 TKJ A,,password123\n".          // tulisan baku
+            "Siswa Romawi,siswa.romawi,5002,student,XI-TKR-B,,password123\n".        // Romawi dan tanda hubung
+            "Siswa Panjang,siswa.panjang,5003,student,Kelas 12 Desain Komunikasi Visual C,,password123\n". // nama jurusan lengkap
+            "Siswa Rombel,siswa.rombel,5004,student,10 AKL,,password123\n".          // rombel tidak ditulis
+            "Siswa Jurusan Baru,siswa.baru,5005,student,10 RPL A,,password123\n".    // jurusan belum terdaftar
+            "Guru Pustaka,guru.pustaka,5006,staff,,Pustakawan,password123\n";
+
+        $this->actingAs($admin)->post('/api/imports/users', [
+            'file' => UploadedFile::fake()->createWithContent('anggota.csv', $csv),
+        ], ['Accept' => 'application/json'])
+            ->assertCreated()
+            ->assertJsonPath('data.failed_rows', 0)
+            ->assertJsonPath('data.success_rows', 6);
+
+        $this->assertDatabaseHas('users', ['username' => 'siswa.spasi', 'class_or_position' => '10 TKJ A']);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.romawi', 'class_or_position' => '11 TKR B']);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.panjang', 'class_or_position' => '12 DKV C']);
+        // Rombel yang tidak ditulis diisi dari satu-satunya rombel aktif pada tingkat dan jurusan itu.
+        $this->assertDatabaseHas('users', ['username' => 'siswa.rombel', 'class_or_position' => '10 AKL A']);
+        // Jurusan dan rombel yang belum terdaftar dibuatkan otomatis, bukan menggagalkan baris.
+        $this->assertDatabaseHas('majors', ['code' => 'RPL', 'is_active' => true]);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.baru', 'class_or_position' => '10 RPL A']);
+        $this->assertDatabaseHas('users', ['username' => 'guru.pustaka', 'class_or_position' => 'Pustakawan']);
+
+        $siswa = User::where('username', 'siswa.romawi')->firstOrFail();
+        $this->assertSame('11 TKR B', $siswa->student->currentAssignment->classGroup->display_name);
     }
 
     public function test_manual_member_validation_returns_readable_indonesian_messages(): void
@@ -456,8 +490,8 @@ class MvpModulesTest extends TestCase
             "Siswa Rombel Baru,siswa.baru,8002,student,X,Teknik Komputer dan Jaringan,C,,password123\n". // rombel dibuat otomatis
             "Siswa Tanpa Kelas,siswa.kosong,8003,student,,,,,password123\n".            // tanpa penempatan
             "Guru Bahasa,guru.bahasa,8004,staff,,,,Guru Bahasa Indonesia,password123\n".
-            "Siswa Jurusan Salah,siswa.salah,8005,student,10,XYZ,A,,password123\n".     // jurusan tidak ada
-            "Siswa Kelas Separuh,siswa.separuh,8006,student,10,TKJ,,,password123\n";    // penempatan tidak lengkap
+            "Siswa Jurusan Baru,siswa.jurusan,8005,student,10,XYZ,A,,password123\n".    // jurusan dibuat otomatis
+            "Siswa Kelas Separuh,siswa.separuh,8006,student,10,TKJ,,,password123\n";    // rombel tidak disebut, padahal ada lebih dari satu
 
         $response = $this->actingAs($admin)->post('/api/imports/users', [
             'file' => UploadedFile::fake()->createWithContent('anggota.csv', $csv),
@@ -465,8 +499,8 @@ class MvpModulesTest extends TestCase
 
         $response->assertCreated()
             ->assertJsonPath('data.total_rows', 6)
-            ->assertJsonPath('data.success_rows', 4)
-            ->assertJsonPath('data.failed_rows', 2);
+            ->assertJsonPath('data.success_rows', 5)
+            ->assertJsonPath('data.failed_rows', 1);
 
         $this->assertDatabaseHas('users', ['username' => 'siswa.ada', 'class_or_position' => $existing->display_name]);
         $this->assertDatabaseHas('student_class_assignments', [
@@ -492,13 +526,18 @@ class MvpModulesTest extends TestCase
         $this->assertDatabaseMissing('student_class_assignments', ['student_id' => Student::where('nis', '8003')->value('id')]);
 
         $this->assertDatabaseHas('users', ['username' => 'guru.bahasa', 'member_type' => 'staff', 'class_or_position' => 'Guru Bahasa Indonesia']);
-        $this->assertDatabaseMissing('users', ['username' => 'siswa.salah']);
+
+        // Jurusan yang belum terdaftar dibuatkan otomatis supaya baris tidak perlu disiapkan dulu di master.
+        $this->assertDatabaseHas('majors', ['code' => 'XYZ', 'is_active' => true]);
+        $this->assertDatabaseHas('users', ['username' => 'siswa.jurusan', 'class_or_position' => '10 XYZ A']);
+
+        // Rombel baru boleh dikosongkan hanya bila tingkat dan jurusannya punya satu rombel;
+        // 10 TKJ kini punya rombel A dan C, jadi barisnya gagal dengan pesan yang menuntun.
         $this->assertDatabaseMissing('users', ['username' => 'siswa.separuh']);
-        $this->assertDatabaseCount('import_failures', 2);
+        $this->assertDatabaseCount('import_failures', 1);
 
         $errors = collect($response->json('data.failures'))->pluck('errors')->flatten()->implode(' ');
-        $this->assertStringContainsString('Jurusan "XYZ" tidak ada pada master akademik', $errors);
-        $this->assertStringContainsString('butuh tingkat, jurusan, dan kelas sekaligus', $errors);
+        $this->assertStringContainsString('belum menyebut rombel', $errors);
 
         $notes = collect($response->json('data.notes'))->pluck('message')->implode(' ');
         $this->assertStringContainsString('dibuatkan otomatis', $notes);
@@ -529,9 +568,24 @@ class MvpModulesTest extends TestCase
         $this->seed();
         $admin = User::where('username', 'admin')->firstOrFail();
 
-        $this->actingAs($admin)->get('/api/imports/users/template')
+        $response = $this->actingAs($admin)->get('/api/imports/users/template')
             ->assertOk()
             ->assertDownload('template-import-anggota.xlsx');
+
+        $path = tempnam(sys_get_temp_dir(), 'tpl').'.xlsx';
+        file_put_contents($path, $response->streamedContent());
+        $book = IOFactory::load($path);
+
+        // Penempatan siswa hanya satu kolom kelas, dan daftar kelas aktif ikut dibawa sebagai bantuan.
+        $this->assertSame(
+            ['name', 'username', 'nis_nip', 'member_type', 'kelas', 'jabatan', 'password'],
+            $book->getSheetByName('Data Anggota')->rangeToArray('A1:G1', null, true, false)[0],
+        );
+        $classes = $book->getSheetByName('Master')->toArray(null, true, true, false);
+        $this->assertContains('10 TKJ A', array_column($classes, 0));
+
+        $book->disconnectWorksheets();
+        unlink($path);
     }
 
     public function test_inventory_codes_work_and_payment_keeps_a_ledger(): void

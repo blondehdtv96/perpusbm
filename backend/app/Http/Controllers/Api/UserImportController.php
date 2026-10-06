@@ -32,10 +32,13 @@ use Throwable;
 
 class UserImportController extends Controller
 {
-    /** Template berjalan: siswa ditempatkan lewat tingkat, jurusan, dan kelas dari master akademik. */
-    private const HEADERS = ['name', 'username', 'nis_nip', 'member_type', 'tingkat', 'jurusan', 'kelas', 'jabatan', 'password'];
+    /** Template berjalan: penempatan siswa ditulis bebas pada satu kolom kelas, misalnya "10 TKJ A". */
+    private const HEADERS = ['name', 'username', 'nis_nip', 'member_type', 'kelas', 'jabatan', 'password'];
 
-    /** Template lama tetap diterima supaya berkas yang sudah disiapkan petugas tidak terbuang. */
+    /** Template dengan kolom penempatan terpisah tetap diterima dan dibaca sebagai satu tulisan kelas. */
+    private const SPLIT_HEADERS = ['name', 'username', 'nis_nip', 'member_type', 'tingkat', 'jurusan', 'kelas', 'jabatan', 'password'];
+
+    /** Template paling lama tetap diterima supaya berkas yang sudah disiapkan petugas tidak terbuang. */
     private const LEGACY_HEADERS = ['name', 'username', 'nis_nip', 'member_type', 'class_or_position', 'password'];
 
     public function __construct(private readonly MemberService $members) {}
@@ -55,18 +58,21 @@ class UserImportController extends Controller
                 fn ($value) => str((string) $value)->replace("\xEF\xBB\xBF", '')->trim()->lower()->replace(' ', '_')->toString(),
                 array_shift($rows) ?? [],
             );
-            $legacy = $this->headerLayout($headers);
+            $layout = $this->headerLayout($headers);
 
             $created = 0;
             $updated = 0;
             $failed = 0;
             $processed = 0;
             $notes = [];
-            $newClasses = [];
+            $newMasters = ['levels' => [], 'majors' => [], 'classes' => []];
             $masters = $this->masters();
 
-            if ($legacy) {
-                $notes[] = ['row_number' => 1, 'username' => null, 'message' => 'Berkas memakai template lama, jadi kolom kelas/jabatan disimpan sebagai teks biasa tanpa penempatan kelas. Unduh template terbaru untuk menempatkan siswa pada tingkat, jurusan, dan kelas.'];
+            if ($layout === 'split') {
+                $notes[] = ['row_number' => 1, 'username' => null, 'message' => 'Berkas memakai template dengan kolom tingkat, jurusan, dan kelas terpisah. Ketiganya tetap dibaca, tetapi template terbaru cukup satu kolom kelas, misalnya 10 TKJ A.'];
+            }
+            if ($layout === 'legacy') {
+                $notes[] = ['row_number' => 1, 'username' => null, 'message' => 'Berkas memakai template lama, jadi kolom kelas/jabatan disimpan sebagai teks biasa tanpa penempatan kelas. Unduh template terbaru untuk menempatkan siswa lewat kolom kelas.'];
             }
 
             foreach ($rows as $offset => $values) {
@@ -79,7 +85,7 @@ class UserImportController extends Controller
                 $row = array_combine($headers, array_slice(array_pad($values, count($headers), null), 0, count($headers)));
                 $row = array_map(fn ($value) => $value === null || $value === '' ? null : trim((string) $value), $row);
                 $row['nis_nip'] = User::normalizeNisNip($row['nis_nip'] ?? null);
-                $validator = Validator::make($row, $this->rules($legacy), $this->messages());
+                $validator = Validator::make($row, $this->rules($layout), $this->messages());
 
                 if ($validator->fails()) {
                     $this->recordFailure($job, $rowNumber, $row, $validator->errors()->toArray());
@@ -92,9 +98,9 @@ class UserImportController extends Controller
                 $password = $data['password'];
                 unset($data['password']);
 
-                $placement = $legacy
-                    ? ['class_group' => null, 'errors' => [], 'notes' => [], 'created_class' => null, 'label' => $data['class_or_position'] ?? null]
-                    : $this->resolvePlacement($data, $masters);
+                $placement = $layout === 'legacy'
+                    ? ['class_group' => null, 'errors' => [], 'notes' => [], 'created' => [], 'label' => $data['class_or_position'] ?? null]
+                    : $this->resolvePlacement($data, $layout, $masters);
 
                 if ($placement['errors']) {
                     $this->recordFailure($job, $rowNumber, $row, $placement['errors']);
@@ -103,8 +109,10 @@ class UserImportController extends Controller
                     continue;
                 }
 
-                if ($placement['created_class']) {
-                    $newClasses[] = $placement['created_class'];
+                foreach (['level' => 'levels', 'major' => 'majors', 'class' => 'classes'] as $key => $bucket) {
+                    if (isset($placement['created'][$key])) {
+                        $newMasters[$bucket][] = $placement['created'][$key];
+                    }
                 }
 
                 try {
@@ -139,8 +147,9 @@ class UserImportController extends Controller
                 'failed_rows' => $failed,
                 'notes' => $notes,
             ]);
-            if ($newClasses) {
-                ActivityLogger::log($request, 'academic.classes.created_by_import', $job, ['classes' => $newClasses]);
+            $newMasters = array_filter(array_map(fn (array $names) => array_values(array_unique($names)), $newMasters));
+            if ($newMasters) {
+                ActivityLogger::log($request, 'academic.classes.created_by_import', $job, $newMasters);
             }
             ActivityLogger::log($request, 'users.imported', $job, ['created' => $created, 'updated' => $updated, 'failed' => $failed]);
 
@@ -154,28 +163,27 @@ class UserImportController extends Controller
     }
 
     /**
-     * Menentukan tata letak berkas. Mengembalikan true bila berkas memakai template lama,
-     * dan melempar pesan yang menyebut kedua susunan header bila tidak dikenali sama sekali.
+     * Menentukan tata letak berkas. Selain template berjalan, dua susunan lama tetap dikenali
+     * supaya berkas yang sudah disiapkan petugas tidak perlu dibuat ulang.
      */
-    private function headerLayout(array $headers): bool
+    private function headerLayout(array $headers): string
     {
-        if ($headers === self::HEADERS) {
-            return false;
-        }
-        if ($headers === self::LEGACY_HEADERS) {
-            return true;
-        }
-
-        throw ValidationException::withMessages([
-            'file' => [
-                'Header template tidak valid. Unduh template terbaru dan jangan mengubah nama atau urutan kolom. '
-                .'Header wajib: '.implode(', ', self::HEADERS).'. '
-                .'Template lama juga masih diterima: '.implode(', ', self::LEGACY_HEADERS).'.',
-            ],
-        ]);
+        return match (true) {
+            $headers === self::HEADERS => 'single',
+            $headers === self::SPLIT_HEADERS => 'split',
+            $headers === self::LEGACY_HEADERS => 'legacy',
+            default => throw ValidationException::withMessages([
+                'file' => [
+                    'Header template tidak valid. Unduh template terbaru dan jangan mengubah nama atau urutan kolom. '
+                    .'Header wajib: '.implode(', ', self::HEADERS).'. '
+                    .'Dua template lama juga masih diterima: '.implode(', ', self::SPLIT_HEADERS).'; '
+                    .'serta '.implode(', ', self::LEGACY_HEADERS).'.',
+                ],
+            ]),
+        };
     }
 
-    private function rules(bool $legacy): array
+    private function rules(string $layout): array
     {
         $rules = [
             'name' => ['required', 'string', 'max:255'],
@@ -185,16 +193,19 @@ class UserImportController extends Controller
             'password' => ['required', 'string', 'min:8'],
         ];
 
-        if ($legacy) {
-            return [...$rules, 'class_or_position' => ['nullable', 'string', 'max:255']];
-        }
-
-        return [...$rules,
-            'tingkat' => ['nullable', 'string', 'max:30'],
-            'jurusan' => ['nullable', 'string', 'max:150'],
-            'kelas' => ['nullable', 'string', 'max:30'],
-            'jabatan' => ['nullable', 'string', 'max:255'],
-        ];
+        return match ($layout) {
+            'legacy' => [...$rules, 'class_or_position' => ['nullable', 'string', 'max:255']],
+            'split' => [...$rules,
+                'tingkat' => ['nullable', 'string', 'max:30'],
+                'jurusan' => ['nullable', 'string', 'max:150'],
+                'kelas' => ['nullable', 'string', 'max:30'],
+                'jabatan' => ['nullable', 'string', 'max:255'],
+            ],
+            default => [...$rules,
+                'kelas' => ['nullable', 'string', 'max:180'],
+                'jabatan' => ['nullable', 'string', 'max:255'],
+            ],
+        };
     }
 
     private function messages(): array
@@ -205,40 +216,37 @@ class UserImportController extends Controller
             'password.min' => 'Password awal minimal 8 karakter.',
             'tingkat.max' => 'Tingkat maksimal :max karakter, contoh: 10.',
             'jurusan.max' => 'Jurusan maksimal :max karakter. Isi dengan kode jurusan, contoh: TKJ.',
-            'kelas.max' => 'Kelas (rombel) maksimal :max karakter, contoh: A.',
+            'kelas.max' => 'Kolom kelas maksimal :max karakter. Tulis tingkat, jurusan, lalu rombel saja, contoh: 10 TKJ A.',
         ];
     }
 
-    /** @return array{levels: Collection, majors: Collection} */
+    /** @return array{levels: Collection, majors: Collection, groups: array<int, string>} */
     private function masters(): array
     {
         return [
             'levels' => EducationLevel::query()->where('is_active', true)->get(),
             'majors' => Major::query()->where('is_active', true)->get(),
+            'groups' => ClassGroup::query()->orderBy('group_name')->pluck('group_name')
+                ->map(fn (string $name) => mb_strtoupper($name))->unique()->values()->all(),
         ];
     }
 
     /**
-     * Menerjemahkan kolom tingkat, jurusan, dan kelas menjadi satu kelas pada master akademik.
-     * Tingkat dan jurusan harus sudah ada supaya salah tulis tidak mengotori master, sedangkan
-     * rombel yang belum ada dibuatkan otomatis pada tahun ajaran aktif dan dicatat sebagai catatan.
+     * Menentukan penempatan satu baris. Siswa cukup ditulis pada satu kolom kelas apa adanya,
+     * sedangkan berkas dengan kolom terpisah digabungkan dulu menjadi satu tulisan kelas.
      *
-     * @return array{class_group: ?ClassGroup, errors: array<string, array<int, string>>, notes: array<int, string>, created_class: ?string, label: ?string}
+     * @return array{class_group: ?ClassGroup, errors: array<string, array<int, string>>, notes: array<int, string>, created: array<string, string>, label: ?string}
      */
-    private function resolvePlacement(array $data, array $masters): array
+    private function resolvePlacement(array $data, string $layout, array &$masters): array
     {
-        $result = ['class_group' => null, 'errors' => [], 'notes' => [], 'created_class' => null, 'label' => null];
-        $isStudent = $data['member_type'] === 'student';
-        $level = $data['tingkat'] ?? null;
-        $major = $data['jurusan'] ?? null;
-        $group = $data['kelas'] ?? null;
+        $result = ['class_group' => null, 'errors' => [], 'notes' => [], 'created' => [], 'label' => null];
         $position = $data['jabatan'] ?? null;
-        $filled = array_filter([$level, $major, $group], fn (?string $value) => $value !== null);
+        $text = $layout === 'split' ? $this->joinPlacementColumns($data) : ($data['kelas'] ?? null);
 
-        if (! $isStudent) {
+        if ($data['member_type'] !== 'student') {
             $result['label'] = $position;
-            if ($filled) {
-                $result['notes'][] = 'Anggota bertipe staff, jadi kolom tingkat, jurusan, dan kelas diabaikan dan hanya jabatan yang disimpan.';
+            if ($text !== null) {
+                $result['notes'][] = 'Anggota bertipe staff, jadi kolom kelas diabaikan dan hanya jabatan yang disimpan.';
             }
             if ($position === null) {
                 $result['notes'][] = 'Kolom jabatan kosong, jabatan anggota dapat dilengkapi lewat halaman Anggota.';
@@ -251,62 +259,194 @@ class UserImportController extends Controller
             $result['notes'][] = 'Anggota bertipe student, jadi kolom jabatan diabaikan dan kelas dipakai sebagai keterangan.';
         }
 
-        if (! $filled) {
-            $result['notes'][] = 'Tingkat, jurusan, dan kelas belum diisi, jadi siswa ini tersimpan tanpa penempatan kelas. Lengkapi lewat halaman Anggota.';
+        if ($text === null) {
+            $result['notes'][] = 'Kolom kelas belum diisi, jadi siswa ini tersimpan tanpa penempatan kelas. Lengkapi lewat halaman Anggota.';
 
             return $result;
         }
 
-        if (count($filled) < 3) {
-            $result['errors']['kelas'] = ['Penempatan siswa butuh tingkat, jurusan, dan kelas sekaligus. Lengkapi ketiga kolom tersebut atau kosongkan semuanya.'];
+        $parsed = $this->parseClassText($text, $masters['groups']);
+
+        if ($parsed['level'] === null || $parsed['major'] === null) {
+            $result['errors']['kelas'] = ["Kelas \"{$text}\" belum bisa dibaca. Tulis tingkat, jurusan, lalu rombel dalam satu kolom, contoh: 10 TKJ A."];
 
             return $result;
         }
 
-        $levelModel = $this->members->matchLevel($level, $masters['levels']);
-        if (! $levelModel) {
-            $result['errors']['tingkat'] = ["Tingkat \"{$level}\" tidak ada pada master akademik yang aktif. Tambahkan tingkat tersebut di menu Struktur akademik lalu ulangi import."];
+        $resolved = $this->resolveClassGroup($parsed, $text, $masters);
+
+        return [...$resolved, 'notes' => [...$result['notes'], ...$resolved['notes']]];
+    }
+
+    /** Template dengan kolom terpisah dibaca ulang sebagai satu tulisan kelas: "10" + "TKJ" + "A". */
+    private function joinPlacementColumns(array $data): ?string
+    {
+        $parts = array_filter(
+            [$data['tingkat'] ?? null, $data['jurusan'] ?? null, $data['kelas'] ?? null],
+            fn (?string $value) => $value !== null && trim($value) !== '',
+        );
+
+        return $parts ? implode(' ', $parts) : null;
+    }
+
+    /**
+     * Membaca kolom kelas yang ditulis bebas menjadi tingkat, jurusan, dan rombel. Pemisah selain
+     * spasi (misalnya "X-TKJ-1") diseragamkan dulu, kata "kelas"/"tingkat" di depan dibuang, dan
+     * kata terakhir dianggap rombel bila pendek atau sudah dikenal sebagai rombel pada master.
+     *
+     * @param  array<int, string>  $knownGroups
+     * @return array{level: ?string, major: ?string, group: ?string}
+     */
+    private function parseClassText(string $text, array $knownGroups): array
+    {
+        $clean = (string) preg_replace('/\s+/u', ' ', (string) preg_replace('~[/\\\\\-_.,;|]+~u', ' ', trim($text)));
+        $clean = trim((string) preg_replace('/^(kelas|tingkat)\s+/iu', '', $clean));
+        $tokens = $clean === '' ? [] : explode(' ', $clean);
+
+        if (count($tokens) < 2) {
+            return ['level' => null, 'major' => null, 'group' => null];
         }
 
-        $majorModel = $this->members->matchMajor($major, $masters['majors']);
-        if (! $majorModel) {
-            $result['errors']['jurusan'] = ["Jurusan \"{$major}\" tidak ada pada master akademik yang aktif. Pakai kode jurusan yang tercantum pada sheet Master, contoh: TKJ."];
+        $level = array_shift($tokens);
+        $group = null;
+        $last = (string) end($tokens);
+
+        if (count($tokens) >= 2 && (in_array(mb_strtoupper($last), $knownGroups, true) || preg_match('/^[\p{L}\p{N}]{1,3}$/u', $last))) {
+            $group = array_pop($tokens);
         }
 
+        return ['level' => $level, 'major' => implode(' ', $tokens), 'group' => $group];
+    }
+
+    /**
+     * Mengubah hasil pembacaan menjadi satu kelas pada master akademik. Tingkat, jurusan, dan
+     * rombel yang belum terdaftar dibuatkan otomatis lalu dicatat, sehingga petugas tidak perlu
+     * menyiapkan struktur akademik lebih dulu hanya untuk bisa mengimpor datanya.
+     *
+     * @param  array{level: string, major: string, group: ?string}  $parsed
+     * @return array{class_group: ?ClassGroup, errors: array<string, array<int, string>>, notes: array<int, string>, created: array<string, string>, label: ?string}
+     */
+    private function resolveClassGroup(array $parsed, string $text, array &$masters): array
+    {
+        $result = ['class_group' => null, 'errors' => [], 'notes' => [], 'created' => [], 'label' => null];
         $year = $this->members->activeAcademicYear();
+
         if (! $year) {
             $result['errors']['kelas'] = ['Tahun ajaran aktif belum tersedia. Tambahkan tahun ajaran di menu Struktur akademik sebelum menempatkan siswa.'];
-        }
 
-        if ($result['errors']) {
             return $result;
         }
 
-        $groupName = mb_strtoupper($group);
-        $keys = [
-            'academic_year_id' => $year->id,
-            'education_level_id' => $levelModel->id,
-            'major_id' => $majorModel->id,
-            'group_name' => $groupName,
-        ];
+        $level = $this->members->matchLevel($parsed['level'], $masters['levels']);
+        if (! $level) {
+            $level = $this->createLevel($parsed['level']);
+            $masters['levels']->push($level);
+            if ($level->wasRecentlyCreated) {
+                $result['created']['level'] = $level->name;
+                $result['notes'][] = "Tingkat {$level->name} belum ada pada master akademik dan dibuatkan otomatis.";
+            } else {
+                $result['notes'][] = "Tingkat {$level->name} sedang nonaktif pada master akademik dan diaktifkan kembali.";
+            }
+        }
+
+        $major = $this->members->matchMajor($parsed['major'], $masters['majors']);
+        if (! $major) {
+            $major = $this->createMajor($parsed['major']);
+            $masters['majors']->push($major);
+            if ($major->wasRecentlyCreated) {
+                $result['created']['major'] = $major->code;
+                $result['notes'][] = "Jurusan {$major->code} belum ada pada master akademik dan dibuatkan otomatis. Lengkapi nama lengkapnya di menu Struktur akademik.";
+            } else {
+                $result['notes'][] = "Jurusan \"{$parsed['major']}\" dicocokkan dengan jurusan {$major->code} ({$major->name}) yang sudah ada pada master akademik.";
+            }
+        }
+
+        $keys = ['academic_year_id' => $year->id, 'education_level_id' => $level->id, 'major_id' => $major->id];
+        $group = $parsed['group'] !== null ? mb_strtoupper(trim($parsed['group'])) : null;
+
+        if ($group === null) {
+            $candidates = ClassGroup::query()->where($keys)->where('is_active', true)->orderBy('group_name')->get();
+
+            if ($candidates->count() !== 1) {
+                $result['errors']['kelas'] = ["Kelas \"{$text}\" belum menyebut rombel. Tulis rombelnya di belakang, contoh: {$level->name} {$major->code} A."];
+
+                return $result;
+            }
+
+            $group = $candidates->first()->group_name;
+            $result['notes'][] = "Kelas \"{$text}\" tidak menyebut rombel, dan karena tingkat serta jurusan tersebut hanya punya satu rombel, siswa ditempatkan pada rombel {$group}.";
+        }
+
+        $keys['group_name'] = mb_substr($group, 0, 30);
         $classGroup = ClassGroup::query()->where($keys)->with(['academicYear', 'educationLevel', 'major'])->first();
-
-        if ($classGroup && ! $classGroup->is_active) {
-            $result['errors']['kelas'] = ["Kelas {$classGroup->display_name} sedang nonaktif. Aktifkan kelas tersebut di menu Struktur akademik lalu ulangi import."];
-
-            return $result;
-        }
 
         if (! $classGroup) {
             $classGroup = ClassGroup::create([...$keys, 'is_active' => true])->load(['academicYear', 'educationLevel', 'major']);
-            $result['created_class'] = $classGroup->display_name;
+            $result['created']['class'] = $classGroup->display_name;
             $result['notes'][] = "Kelas {$classGroup->display_name} belum ada pada master akademik tahun {$year->name} dan dibuatkan otomatis.";
+        } elseif (! $classGroup->is_active) {
+            $classGroup->update(['is_active' => true]);
+            $result['notes'][] = "Kelas {$classGroup->display_name} sedang nonaktif pada master akademik dan diaktifkan kembali agar siswa ini bisa ditempatkan.";
+        }
+
+        if (! in_array($keys['group_name'], $masters['groups'], true)) {
+            $masters['groups'][] = $keys['group_name'];
         }
 
         $result['class_group'] = $classGroup;
         $result['label'] = $classGroup->display_name;
 
         return $result;
+    }
+
+    /** Tingkat baru memakai angka bila ditulis dengan angka Romawi supaya master tetap seragam. */
+    private function createLevel(string $value): EducationLevel
+    {
+        $name = mb_substr($this->members->canonicalLevelName($value), 0, 30);
+        $existing = EducationLevel::query()->where('name', $name)->first();
+
+        if ($existing) {
+            if (! $existing->is_active) {
+                $existing->update(['is_active' => true]);
+            }
+
+            return $existing;
+        }
+
+        return EducationLevel::create([
+            'name' => $name,
+            'sort_order' => is_numeric($name) ? min(255, max(0, (int) $name)) : 0,
+            'is_active' => true,
+        ]);
+    }
+
+    /** Jurusan baru memakai tulisan petugas sebagai kode, atau singkatannya bila yang ditulis nama panjang. */
+    private function createMajor(string $value): Major
+    {
+        $value = trim($value);
+        $code = mb_strlen($value) <= 20 ? mb_strtoupper($value) : $this->majorCode($value);
+        $existing = Major::query()->where('code', $code)->first();
+
+        if ($existing) {
+            if (! $existing->is_active) {
+                $existing->update(['is_active' => true]);
+            }
+
+            return $existing;
+        }
+
+        return Major::create(['code' => $code, 'name' => mb_substr($value, 0, 150), 'is_active' => true]);
+    }
+
+    /** Nama jurusan yang terlalu panjang untuk kolom kode diringkas menjadi singkatan huruf depannya. */
+    private function majorCode(string $value): string
+    {
+        $initials = collect(preg_split('/\s+/u', $value) ?: [])
+            ->reject(fn (string $word) => in_array(mb_strtolower($word), ['dan', 'atau', 'the', 'of'], true))
+            ->map(fn (string $word) => mb_strtoupper(mb_substr($word, 0, 1)))
+            ->implode('');
+
+        return mb_substr($initials !== '' ? $initials : mb_strtoupper($value), 0, 20);
     }
 
     /**
@@ -430,15 +570,16 @@ class UserImportController extends Controller
         $classes = $this->members->activeClassGroups()
             ->with(['educationLevel:id,name', 'major:id,code,name'])
             ->orderBy('education_level_id')->orderBy('major_id')->orderBy('group_name')
-            ->get();
-        $rombels = $classes->pluck('group_name')->unique()->sort()->values()->all();
+            ->get()
+            ->map(fn (ClassGroup $group) => $group->display_name)
+            ->values();
 
-        return response()->streamDownload(function () use ($levels, $majors, $classes, $rombels): void {
+        return response()->streamDownload(function () use ($levels, $majors, $classes): void {
             $spreadsheet = new Spreadsheet;
-            $this->buildDataSheet($spreadsheet->getActiveSheet(), count($levels), $majors->count(), count($rombels));
-            $this->buildMasterSheet($spreadsheet->createSheet(), $levels, $majors, $classes, $rombels);
+            $this->buildDataSheet($spreadsheet->getActiveSheet(), $classes->count());
+            $this->buildMasterSheet($spreadsheet->createSheet(), $classes, $levels, $majors);
             $this->buildGuideSheet($spreadsheet->createSheet());
-            $this->buildExampleSheet($spreadsheet->createSheet(), $levels, $majors, $rombels);
+            $this->buildExampleSheet($spreadsheet->createSheet(), $classes, $levels, $majors);
             $spreadsheet->setActiveSheetIndex(0);
             (new Xlsx($spreadsheet))->save('php://output');
             $spreadsheet->disconnectWorksheets();
@@ -447,68 +588,72 @@ class UserImportController extends Controller
         ]);
     }
 
-    private function buildDataSheet(Worksheet $sheet, int $levelCount, int $majorCount, int $rombelCount): void
+    private function buildDataSheet(Worksheet $sheet, int $classCount): void
     {
         $lastRow = 1000;
         $sheet->setTitle('Data Anggota');
         $sheet->fromArray(self::HEADERS, null, 'A1');
         $sheet->freezePane('A2');
-        $sheet->setAutoFilter("A1:I{$lastRow}");
-        $sheet->getStyle('A1:I1')->applyFromArray([
+        $sheet->setAutoFilter("A1:G{$lastRow}");
+        $sheet->getStyle('A1:G1')->applyFromArray([
             'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
             'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => '1D4ED8']],
             'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER],
         ]);
-        // Kolom penempatan siswa diberi warna berbeda agar petugas langsung melihat kelompoknya.
-        $sheet->getStyle('E1:G1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB('0F766E');
-        $sheet->getStyle('H1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB('B45309');
-        $sheet->getStyle("A1:I{$lastRow}")->getAlignment()->setVertical(Alignment::VERTICAL_CENTER);
-        foreach (['B', 'C', 'E', 'G', 'I'] as $column) {
+        // Kolom penempatan diberi warna berbeda agar petugas langsung melihat mana milik siswa dan mana milik staf.
+        $sheet->getStyle('E1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB('0F766E');
+        $sheet->getStyle('F1')->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB('B45309');
+        $sheet->getStyle("A1:G{$lastRow}")->getAlignment()->setVertical(Alignment::VERTICAL_CENTER);
+        foreach (['B', 'C', 'E', 'G'] as $column) {
             $sheet->getStyle("{$column}2:{$column}{$lastRow}")->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
         }
-        foreach (['A' => 26, 'B' => 20, 'C' => 18, 'D' => 14, 'E' => 10, 'F' => 14, 'G' => 10, 'H' => 24, 'I' => 20] as $column => $width) {
+        foreach (['A' => 26, 'B' => 20, 'C' => 18, 'D' => 14, 'E' => 24, 'F' => 24, 'G' => 20] as $column => $width) {
             $sheet->getColumnDimension($column)->setWidth($width);
         }
 
-        $lists = [
-            'D' => ['formula' => '"student,staff"', 'title' => 'Tipe tidak valid', 'error' => 'Pilih student atau staff dari daftar.', 'blank' => false],
-            'E' => ['formula' => $levelCount > 0 ? 'Master!$A$2:$A$'.($levelCount + 1) : null, 'title' => 'Tingkat tidak valid', 'error' => 'Pilih tingkat dari sheet Master. Kosongkan bila anggota bukan siswa.', 'blank' => true],
-            'F' => ['formula' => $majorCount > 0 ? 'Master!$B$2:$B$'.($majorCount + 1) : null, 'title' => 'Jurusan tidak valid', 'error' => 'Pilih kode jurusan dari sheet Master. Kosongkan bila anggota bukan siswa.', 'blank' => true],
-            'G' => ['formula' => $rombelCount > 0 ? 'Master!$D$2:$D$'.($rombelCount + 1) : null, 'title' => 'Kelas tidak dikenal', 'error' => 'Kelas boleh berisi rombel baru, misalnya A atau B.', 'blank' => true, 'warn' => true],
-        ];
+        $type = new DataValidation;
+        $type->setType(DataValidation::TYPE_LIST)
+            ->setErrorStyle(DataValidation::STYLE_STOP)
+            ->setAllowBlank(false)
+            ->setShowDropDown(true)
+            ->setShowErrorMessage(true)
+            ->setErrorTitle('Tipe tidak valid')
+            ->setError('Pilih student atau staff dari daftar.')
+            ->setFormula1('"student,staff"');
+        $sheet->setDataValidation("D2:D{$lastRow}", $type);
 
-        // Satu objek validasi per kolom (bukan per sel) supaya berkas template tetap ringan.
-        foreach ($lists as $column => $list) {
-            if ($list['formula'] === null) {
-                continue;
-            }
-            $validation = new DataValidation;
-            $validation->setType(DataValidation::TYPE_LIST)
-                ->setErrorStyle(($list['warn'] ?? false) ? DataValidation::STYLE_WARNING : DataValidation::STYLE_STOP)
-                ->setAllowBlank($list['blank'])
+        // Kolom kelas boleh ditulis bebas: daftar kelas aktif hanya ditawarkan sebagai bantuan,
+        // jadi validasinya memakai gaya peringatan dan tetap menerima kelas yang belum terdaftar.
+        if ($classCount > 0) {
+            $kelas = new DataValidation;
+            $kelas->setType(DataValidation::TYPE_LIST)
+                ->setErrorStyle(DataValidation::STYLE_WARNING)
+                ->setAllowBlank(true)
                 ->setShowDropDown(true)
                 ->setShowErrorMessage(true)
-                ->setErrorTitle($list['title'])
-                ->setError($list['error'])
-                ->setFormula1($list['formula']);
-            $sheet->setDataValidation("{$column}2:{$column}{$lastRow}", $validation);
+                ->setShowInputMessage(true)
+                ->setPromptTitle('Kelas siswa')
+                ->setPrompt('Pilih dari daftar atau tulis sendiri, contoh: 10 TKJ A. Kosongkan untuk staf.')
+                ->setErrorTitle('Kelas belum terdaftar')
+                ->setError('Kelas ini belum ada pada master akademik. Pilih Ya untuk tetap memakainya; kelasnya akan dibuat otomatis saat import.')
+                ->setFormula1('Master!$A$2:$A$'.($classCount + 1));
+            $sheet->setDataValidation("E2:E{$lastRow}", $kelas);
         }
     }
 
-    private function buildMasterSheet(Worksheet $sheet, array $levels, Collection $majors, Collection $classes, array $rombels): void
+    private function buildMasterSheet(Worksheet $sheet, Collection $classes, array $levels, Collection $majors): void
     {
         $sheet->setTitle('Master');
-        $sheet->fromArray(['tingkat', 'kode jurusan', 'nama jurusan', 'kelas (rombel)', 'kelas aktif yang sudah ada'], null, 'A1');
-        $sheet->fromArray(array_map(fn (string $level) => [$level], $levels), null, 'A2');
-        $sheet->fromArray($majors->map(fn ($major) => [$major->code, $major->name])->all(), null, 'B2');
-        $sheet->fromArray(array_map(fn (string $rombel) => [$rombel], $rombels), null, 'D2');
-        $sheet->fromArray($classes->map(fn (ClassGroup $group) => [$group->display_name])->all(), null, 'E2');
-        $sheet->getStyle('A1:E1')->applyFromArray([
+        $sheet->fromArray(['kelas aktif (pilih atau tulis sendiri)', 'tingkat', 'kode jurusan', 'nama jurusan'], null, 'A1');
+        $sheet->fromArray($classes->map(fn (string $name) => [$name])->all(), null, 'A2');
+        $sheet->fromArray(array_map(fn (string $level) => [$level], $levels), null, 'B2');
+        $sheet->fromArray($majors->map(fn ($major) => [$major->code, $major->name])->all(), null, 'C2');
+        $sheet->getStyle('A1:D1')->applyFromArray([
             'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
             'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => '0F766E']],
         ]);
-        $sheet->getStyle('A2:A200')->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
-        foreach (['A' => 12, 'B' => 16, 'C' => 42, 'D' => 16, 'E' => 32] as $column => $width) {
+        $sheet->getStyle('A2:B200')->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
+        foreach (['A' => 34, 'B' => 12, 'C' => 16, 'D' => 42] as $column => $width) {
             $sheet->getColumnDimension($column)->setWidth($width);
         }
         $sheet->freezePane('A2');
@@ -522,20 +667,21 @@ class UserImportController extends Controller
             ['Langkah', 'Keterangan'],
             ['1', 'Isi data hanya pada sheet Data Anggota mulai baris 2.'],
             ['2', 'Jangan mengubah nama, urutan, atau jumlah kolom header.'],
-            ['3', 'Sembilan kolom: name, username, nis_nip, member_type, tingkat, jurusan, kelas, jabatan, password.'],
+            ['3', 'Tujuh kolom: name, username, nis_nip, member_type, kelas, jabatan, password.'],
             ['4', 'Kolom wajib untuk semua anggota: name, username, member_type, dan password.'],
             ['5', 'member_type dipilih dari dropdown: student atau staff.'],
-            ['6', 'Untuk student: isi tingkat, jurusan, dan kelas sekaligus. Pilihannya ada pada sheet Master.'],
-            ['7', 'Tingkat boleh ditulis 10 atau X; jurusan memakai kode seperti TKJ; kelas adalah rombel seperti A.'],
-            ['8', 'Kelas (rombel) yang belum ada akan dibuatkan otomatis pada tahun ajaran aktif dan dicatat di hasil import.'],
-            ['9', 'Tingkat dan jurusan harus sudah ada di master akademik. Bila belum, tambahkan dulu di menu Struktur akademik.'],
-            ['10', 'Bila ketiga kolom penempatan dikosongkan, siswa tetap tersimpan tanpa kelas dan dapat dilengkapi lewat halaman Anggota.'],
-            ['11', 'Untuk staff: isi kolom jabatan, dan biarkan tingkat, jurusan, serta kelas kosong.'],
-            ['12', 'Password awal minimal 8 karakter. Gunakan password unik dan aman.'],
-            ['13', 'Username, NIS/NIP, tingkat, kelas, dan password diformat sebagai teks agar format aslinya dipertahankan.'],
-            ['14', 'Baris dengan username atau NIS/NIP yang sudah terdaftar tidak gagal: data anggota lama diperbarui dan password lamanya tetap berlaku.'],
-            ['15', 'Jika username sudah dipakai anggota lain, sistem menambahkan angka di belakangnya dan mencatatnya di hasil import.'],
-            ['16', 'Sheet Master dan Contoh hanya panduan dan tidak akan diimpor.'],
+            ['6', 'Untuk student: tulis kelas pada SATU kolom kelas, contoh: 10 TKJ A. Tidak perlu lagi dipisah per tingkat dan jurusan.'],
+            ['7', 'Penulisannya bebas. "X TKJ 1", "10-TKJ-A", dan "Kelas 10 Teknik Komputer dan Jaringan A" semuanya terbaca.'],
+            ['8', 'Urutannya tingkat, lalu jurusan, lalu rombel. Tingkat boleh angka atau Romawi; jurusan boleh kode atau nama lengkap.'],
+            ['9', 'Tingkat, jurusan, atau rombel yang belum terdaftar dibuatkan otomatis pada tahun ajaran aktif dan dicatat di hasil import.'],
+            ['10', 'Karena dibuat otomatis, periksa ejaan kelas sebelum mengunggah agar master akademik tidak terisi data salah tulis.'],
+            ['11', 'Bila kolom kelas dikosongkan, siswa tetap tersimpan tanpa kelas dan dapat dilengkapi lewat halaman Anggota.'],
+            ['12', 'Untuk staff: isi kolom jabatan dan biarkan kolom kelas kosong.'],
+            ['13', 'Password awal minimal 8 karakter. Gunakan password unik dan aman.'],
+            ['14', 'Username, NIS/NIP, kelas, dan password diformat sebagai teks agar format aslinya dipertahankan.'],
+            ['15', 'Baris dengan username atau NIS/NIP yang sudah terdaftar tidak gagal: data anggota lama diperbarui dan password lamanya tetap berlaku.'],
+            ['16', 'Jika username sudah dipakai anggota lain, sistem menambahkan angka di belakangnya dan mencatatnya di hasil import.'],
+            ['17', 'Sheet Master dan Contoh hanya panduan dan tidak akan diimpor.'],
             ['', 'Simpan sebagai XLSX, lalu unggah melalui halaman Anggota. Maksimal 5 MB.'],
         ], null, 'A1');
         $sheet->mergeCells('A1:B1');
@@ -547,31 +693,32 @@ class UserImportController extends Controller
         $sheet->getStyle('A2:B2')->getFont()->setBold(true);
         $sheet->getColumnDimension('A')->setWidth(14);
         $sheet->getColumnDimension('B')->setWidth(95);
-        $sheet->getStyle('A1:B20')->getAlignment()->setWrapText(true)->setVertical(Alignment::VERTICAL_TOP);
+        $sheet->getStyle('A1:B21')->getAlignment()->setWrapText(true)->setVertical(Alignment::VERTICAL_TOP);
         $sheet->freezePane('A3');
     }
 
-    private function buildExampleSheet(Worksheet $sheet, array $levels, Collection $majors, array $rombels): void
+    private function buildExampleSheet(Worksheet $sheet, Collection $classes, array $levels, Collection $majors): void
     {
         $level = $levels[0] ?? '10';
         $major = $majors->first()?->code ?? 'TKJ';
-        $rombel = $rombels[0] ?? 'A';
+        $kelas = $classes->first() ?? trim("{$level} {$major} A");
         $sheet->setTitle('Contoh');
         $sheet->fromArray([
             self::HEADERS,
-            ['Budi Santoso', 'budi.santoso', '20260001', 'student', $level, $major, $rombel, '', 'Budi#2026'],
-            ['Siti Aminah', 'siti.aminah', '19876543', 'staff', '', '', '', 'Pustakawan', 'Siti#2026'],
-            ['Anggota Tanpa Kelas', 'anggota.baru', '20260002', 'student', '', '', '', '', 'Baru#2026'],
+            ['Budi Santoso', 'budi.santoso', '20260001', 'student', $kelas, '', 'Budi#2026'],
+            ['Dewi Lestari', 'dewi.lestari', '20260002', 'student', trim("{$level} {$major} B"), '', 'Dewi#2026'],
+            ['Siti Aminah', 'siti.aminah', '19876543', 'staff', '', 'Pustakawan', 'Siti#2026'],
+            ['Anggota Tanpa Kelas', 'anggota.baru', '20260003', 'student', '', '', 'Baru#2026'],
         ], null, 'A1');
-        $sheet->getStyle('A1:I1')->applyFromArray([
+        $sheet->getStyle('A1:G1')->applyFromArray([
             'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
             'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => '1E3A8A']],
         ]);
-        foreach (range('A', 'I') as $column) {
+        foreach (range('A', 'G') as $column) {
             $sheet->getColumnDimension($column)->setAutoSize(true);
         }
-        foreach (['B', 'C', 'E', 'G', 'I'] as $column) {
-            $sheet->getStyle("{$column}2:{$column}4")->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
+        foreach (['B', 'C', 'E', 'G'] as $column) {
+            $sheet->getStyle("{$column}2:{$column}5")->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
         }
     }
 

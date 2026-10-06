@@ -223,6 +223,21 @@ class MemberService
         return $majors->first(fn (Major $major) => mb_strtolower($major->code) === $needle || mb_strtolower($major->name) === $needle);
     }
 
+    /**
+     * Nama tingkat yang dipakai saat tingkat baru dibuat dari berkas import: angka Romawi
+     * diseragamkan menjadi angka supaya master tidak berisi "X" dan "10" sekaligus.
+     */
+    public function canonicalLevelName(string $value): string
+    {
+        $normalized = $this->normalizeLevel($value);
+
+        if (is_numeric($normalized)) {
+            return $normalized;
+        }
+
+        return trim((string) preg_replace('/^(kelas|tingkat)\s+/iu', '', trim($value)));
+    }
+
     private function ensureStudent(User $user): Student
     {
         $student = Student::query()->where('user_id', $user->id)->first() ?? new Student(['user_id' => $user->id]);

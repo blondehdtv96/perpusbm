@@ -255,7 +255,7 @@ export default function UsersPage() {
     setError('')
     try {
       await download('/api/imports/users/template')
-      setMessage('Template XLSX berhasil diunduh. Sheet Master memuat tingkat dan jurusan yang aktif.')
+      setMessage('Template XLSX berhasil diunduh. Kelas siswa cukup ditulis pada satu kolom, misalnya 10 TKJ A.')
     } catch (reason) { setError(reason.message) } finally { setDownloadingTemplate(false) }
   }
 
@@ -379,16 +379,16 @@ export default function UsersPage() {
 
       <Panel
         title="Import anggota"
-        description="Template memuat kolom tingkat, jurusan, dan kelas beserta daftar pilihannya."
+        description="Kelas siswa ditulis bebas pada satu kolom, misalnya 10 TKJ A."
         action={<span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">XLSX</span>}
       >
         <ol className="grid grid-cols-3 gap-2 text-center text-[11px] font-bold text-slate-500"><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">1</span>Unduh</li><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">2</span>Isi data</li><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">3</span>Unggah</li></ol>
         <button type="button" onClick={downloadTemplate} disabled={downloadingTemplate || busy} className="mt-4 min-h-11 w-full rounded-xl border border-blue-700 px-4 text-sm font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-50"><BusyLabel busy={downloadingTemplate} busyText="Mengunduh…">↓ Unduh template XLSX</BusyLabel></button>
         <ul className="mt-3 space-y-1.5 rounded-2xl bg-slate-50 p-3 text-[11px] leading-5 text-slate-600">
-          <li><strong className="text-navy-950">Siswa:</strong> isi tingkat, jurusan, dan kelas sekaligus. Pilihannya ada pada sheet <strong>Master</strong>.</li>
-          <li><strong className="text-navy-950">Guru / staf:</strong> isi kolom jabatan, biarkan kolom penempatan kosong.</li>
-          <li>Rombel baru dibuatkan otomatis pada tahun ajaran aktif; tingkat dan jurusan harus sudah ada.</li>
-          <li>Template lama tetap diterima, tetapi tanpa penempatan kelas.</li>
+          <li><strong className="text-navy-950">Siswa:</strong> isi satu kolom <strong>kelas</strong> dengan urutan tingkat, jurusan, rombel — contoh <strong>10 TKJ A</strong>, <strong>X-TKJ-1</strong>, atau nama jurusan lengkap.</li>
+          <li><strong className="text-navy-950">Guru / staf:</strong> isi kolom jabatan, biarkan kolom kelas kosong.</li>
+          <li>Tingkat, jurusan, dan rombel yang belum terdaftar dibuatkan otomatis pada tahun ajaran aktif, lalu dicatat di hasil import — periksa ejaannya sebelum mengunggah.</li>
+          <li>Template lama tetap diterima, termasuk yang memisah tingkat, jurusan, dan kelas.</li>
         </ul>
         <div role="button" tabIndex="0" onClick={() => fileInputRef.current?.click()} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') fileInputRef.current?.click() }} onDragEnter={(event) => { event.preventDefault(); setDragging(true) }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); selectImportFile(event.dataTransfer.files?.[0]) }} className={`mt-4 cursor-pointer rounded-2xl border-2 border-dashed p-5 text-center transition ${dragging ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50 hover:border-blue-400'}`}><div className="text-2xl text-blue-700" aria-hidden="true">⇧</div><p className="mt-2 text-sm font-bold">Tarik file ke sini atau klik untuk memilih</p><p className="mt-1 text-xs text-slate-500">CSV, XLSX, atau XLS • Maksimal 5 MB</p><input ref={fileInputRef} type="file" accept=".csv,.txt,.xlsx,.xls" onChange={(event) => selectImportFile(event.target.files?.[0])} className="sr-only" /></div>
         {importFile && <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-blue-50 p-3"><div className="min-w-0"><p className="truncate text-sm font-bold text-navy-950">{importFile.name}</p><p className="text-xs text-blue-700">{(importFile.size / 1024).toFixed(1)} KB • Siap diunggah</p></div><button type="button" onClick={() => { setImportFile(null); if (fileInputRef.current) fileInputRef.current.value = '' }} className="shrink-0 text-xs font-bold text-red-600">Hapus</button></div>}
