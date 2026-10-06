@@ -1,16 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BusyLabel, EmptyState, Feedback, LoadingOverlay, PageHeader, ProgressBar } from '../components/ui'
+import { BusyLabel, EmptyState, Feedback, LoadingOverlay, PageHeader, Panel, ProgressBar } from '../components/ui'
 import { api, download } from '../lib/api'
 import { useAuth } from '../store/auth'
 
+const API_URL = import.meta.env.VITE_API_URL ?? ''
+
+// Tanggal hari ini pada zona waktu petugas, dipakai sebagai tanggal gabung bawaan.
+function today() {
+  const now = new Date()
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+}
+
 const initialForm = {
-  name: '', username: '', password: '', nis_nip: '', member_type: 'student', role: 'student', status: 'active',
+  name: '', username: '', password: '', password_confirmation: '', nis_nip: '', member_type: 'student', role: 'student', status: 'active',
+  gender: '', email: '', phone: '', joined_at: today(),
   academic_year_id: '', education_level_id: '', major_id: '', class_group_id: '', position: '',
 }
 const emptyOptions = { academic_years: [], levels: [], majors: [], classes: [], default_academic_year_id: null }
 const memberTypes = [['student', 'Siswa'], ['staff', 'Guru / Staf']]
 const staffRoles = [['staff', 'Guru / Staf'], ['librarian', 'Pustakawan'], ['super_admin', 'Super Admin']]
 const statuses = [['active', 'Aktif'], ['suspended', 'Ditangguhkan'], ['inactive', 'Tidak aktif']]
+const genders = [['L', 'Laki-laki'], ['P', 'Perempuan']]
+const photoTypes = ['image/jpeg', 'image/png', 'image/webp']
+const maxPhotoSize = 2 * 1024 * 1024
 const statusStyles = {
   active: 'bg-emerald-100 text-emerald-700',
   suspended: 'bg-amber-100 text-amber-800',
@@ -66,6 +78,7 @@ export default function UsersPage() {
   const canDelete = permissions.includes('users.delete')
   const canManageAcademic = permissions.includes('academic.manage')
   const fileInputRef = useRef(null)
+  const photoInputRef = useRef(null)
   const [users, setUsers] = useState([])
   const [stats, setStats] = useState(null)
   const [statsLoading, setStatsLoading] = useState(true)
@@ -85,6 +98,10 @@ export default function UsersPage() {
   const [quickBusy, setQuickBusy] = useState(false)
   const [quickError, setQuickError] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  const [photo, setPhoto] = useState(null)
+  const [photoPreview, setPhotoPreview] = useState('')
+  const [usernameAuto, setUsernameAuto] = useState(true)
+  const [saveProgress, setSaveProgress] = useState(null)
   const [importFile, setImportFile] = useState(null)
   const [importResult, setImportResult] = useState(null)
   const [dragging, setDragging] = useState(false)
@@ -100,6 +117,7 @@ export default function UsersPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false)
 
   const isStudent = form.member_type === 'student'
+  const passwordMismatch = form.password_confirmation !== '' && form.password !== form.password_confirmation
   const pageIds = users.map((user) => user.id)
   const allPageSelected = users.length > 0 && pageIds.every((id) => selected.includes(id))
 
@@ -196,6 +214,53 @@ export default function UsersPage() {
     }))
   }
 
+  // NIS/NIP otomatis menjadi username seperti pada registrasi siswa mandiri. Penyalinan
+  // otomatis berhenti begitu petugas mengetik username sendiri, agar isian manual tidak tertimpa.
+  const changeIdentity = (value) => setForm((current) => ({
+    ...current,
+    nis_nip: value,
+    username: usernameAuto ? value.replace(/\s+/g, '') : current.username,
+  }))
+
+  const changeUsername = (value) => {
+    setUsernameAuto(false)
+    setForm((current) => ({ ...current, username: value.replace(/\s+/g, '') }))
+  }
+
+  const reuseIdentityAsUsername = () => {
+    setUsernameAuto(true)
+    setForm((current) => ({ ...current, username: current.nis_nip.replace(/\s+/g, '') }))
+  }
+
+  // Foto dipakai pada kartu perpustakaan, jadi batasannya disamakan dengan validasi server.
+  const selectPhoto = (file) => {
+    setFormErrors((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== 'photo')))
+    setPhotoPreview((current) => { if (current) URL.revokeObjectURL(current); return '' })
+    if (!file) {
+      setPhoto(null)
+      return
+    }
+    if (!photoTypes.includes(file.type)) {
+      setPhoto(null)
+      setFormErrors((current) => ({ ...current, photo: ['Format foto harus JPG, PNG, atau WEBP.'] }))
+      return
+    }
+    if (file.size > maxPhotoSize) {
+      setPhoto(null)
+      setFormErrors((current) => ({ ...current, photo: ['Ukuran foto maksimal 2 MB.'] }))
+      return
+    }
+    setPhoto(file)
+    setPhotoPreview(URL.createObjectURL(file))
+  }
+
+  const clearPhoto = () => {
+    selectPhoto(null)
+    if (photoInputRef.current) photoInputRef.current.value = ''
+  }
+
+  useEffect(() => () => { if (photoPreview) URL.revokeObjectURL(photoPreview) }, [photoPreview])
+
   const create = async (event) => {
     event.preventDefault()
     setBusy(true)
@@ -206,22 +271,42 @@ export default function UsersPage() {
       name: form.name,
       username: form.username,
       password: form.password,
+      password_confirmation: form.password_confirmation,
       nis_nip: form.nis_nip,
       member_type: form.member_type,
+      gender: form.gender,
+      email: form.email,
+      phone: form.phone,
+      joined_at: form.joined_at,
       status: form.status,
       role: isStudent ? 'student' : form.role,
       ...(isStudent ? { class_group_id: form.class_group_id ? Number(form.class_group_id) : null } : { position: form.position }),
     }
+    // Foto hanya dapat dikirim sebagai berkas, jadi baris dengan foto memakai FormData
+    // beserta progres unggahan; tanpa foto tetap JSON agar permintaannya ringan.
+    const body = photo
+      ? Object.entries({ ...payload, photo }).reduce((data, [key, value]) => {
+        if (value !== null && value !== undefined && value !== '') data.append(key, value)
+        return data
+      }, new FormData())
+      : JSON.stringify(payload)
+    if (photo) setSaveProgress({ percent: 0, phase: 'upload' })
     try {
-      const response = await api('/api/users', { method: 'POST', body: JSON.stringify(payload) })
-      setForm({ ...initialForm, academic_year_id: form.academic_year_id, education_level_id: form.education_level_id, major_id: form.major_id, class_group_id: form.class_group_id, member_type: form.member_type, role: form.role })
+      const response = await api('/api/users', {
+        method: 'POST',
+        body,
+        ...(photo ? { onProgress: (percent, phase) => setSaveProgress(phase === 'done' ? { percent: 100, phase: 'processing' } : { percent, phase }) } : {}),
+      })
+      setForm({ ...initialForm, joined_at: form.joined_at, academic_year_id: form.academic_year_id, education_level_id: form.education_level_id, major_id: form.major_id, class_group_id: form.class_group_id, member_type: form.member_type, role: form.role })
       setShowPassword(false)
+      setUsernameAuto(true)
+      clearPhoto()
       setMessage(response?.message ?? 'Anggota berhasil ditambahkan.')
       await refresh()
     } catch (reason) {
       setFormErrors(reason.errors ?? {})
       setError(errorLines(reason))
-    } finally { setBusy(false) }
+    } finally { setBusy(false); setSaveProgress(null) }
   }
 
   const openQuickAdd = (type) => {
@@ -414,14 +499,14 @@ export default function UsersPage() {
     </section>
 
     {canCreate && <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(20rem,1fr)]">
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><h2 className="text-lg font-black text-navy-950">Tambah anggota</h2><p className="mt-1 text-sm text-slate-500">Tiga langkah: pilih tipe anggota, isi identitas, lalu tentukan penempatannya.</p></div>
-          <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">Entri manual</span>
-        </div>
-        {optionsError && <div className="mt-4"><Feedback type="warning">Pilihan kelas gagal dimuat: {optionsError} <button type="button" onClick={loadOptions} className="underline">Coba lagi</button></Feedback></div>}
+      <Panel
+        title="Tambah anggota"
+        description="Empat langkah: pilih tipe anggota, isi identitas, tentukan penempatan, lalu lengkapi data kartu perpustakaan."
+        action={<span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">Entri manual</span>}
+      >
+        {optionsError && <div className="mb-4"><Feedback type="warning">Pilihan kelas gagal dimuat: {optionsError} <button type="button" onClick={loadOptions} className="underline">Coba lagi</button></Feedback></div>}
 
-        <form onSubmit={create} className="mt-5 space-y-4">
+        <form onSubmit={create} className="space-y-4">
           <Step number="1" title="Tipe anggota" description="Menentukan isian penempatan dan aturan pinjam yang dipakai.">
             <div className="grid gap-3 sm:grid-cols-2">
               <TypeTile active={isStudent} icon="student" label="Siswa" description="Ditempatkan pada tingkat, jurusan, dan kelas." onSelect={() => changeMemberType('student')} />
@@ -429,13 +514,20 @@ export default function UsersPage() {
             </div>
           </Step>
 
-          <Step number="2" title="Identitas anggota" description="Username dan password awal dipakai anggota untuk masuk pertama kali.">
+          <Step number="2" title="Identitas anggota" description={`${isStudent ? 'NIS' : 'NIP'} otomatis menjadi username. Password awal dipakai anggota untuk masuk pertama kali.`}>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Nama lengkap" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required error={formErrors.name?.[0]} className="sm:col-span-2" />
-              <Field label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value.replace(/\s+/g, '') })} required minLength="3" hint="Huruf, angka, titik, garis bawah, dan strip. Tanpa spasi." error={formErrors.username?.[0]} />
-              <Field label={isStudent ? 'NIS' : 'NIP'} value={form.nis_nip} onChange={(value) => setForm({ ...form, nis_nip: value })} hint="Boleh dikosongkan bila belum ada." error={formErrors.nis_nip?.[0]} />
+              <Field label={isStudent ? 'NIS' : 'NIP'} value={form.nis_nip} onChange={changeIdentity} hint={`Boleh dikosongkan bila belum ada. ${isStudent ? 'NIS' : 'NIP'} wajib unik.`} error={formErrors.nis_nip?.[0]} />
+              <Field label="Username" value={form.username} onChange={changeUsername} required minLength="3"
+                hint={usernameAuto ? `Mengikuti ${isStudent ? 'NIS' : 'NIP'} secara otomatis. Ketik untuk mengubahnya sendiri.` : 'Huruf, angka, titik, garis bawah, dan strip. Tanpa spasi.'}
+                error={formErrors.username?.[0]}
+                action={!usernameAuto && form.nis_nip.trim() !== '' && <button type="button" onClick={reuseIdentityAsUsername} className="font-bold text-blue-700 hover:underline">{`Pakai ${isStudent ? 'NIS' : 'NIP'}`}</button>} />
               <Field label="Password awal" type={showPassword ? 'text' : 'password'} value={form.password} onChange={(value) => setForm({ ...form, password: value })} required minLength="8" hint="Minimal 8 karakter." error={formErrors.password?.[0]}
-                action={<span className="inline-flex gap-2"><button type="button" onClick={() => setShowPassword((value) => !value)} className="font-bold text-blue-700 hover:underline">{showPassword ? 'Sembunyikan' : 'Lihat'}</button><button type="button" onClick={() => { setForm((current) => ({ ...current, password: suggestPassword() })); setShowPassword(true) }} className="font-bold text-blue-700 hover:underline">Buat otomatis</button></span>} />
+                action={<span className="inline-flex gap-2"><button type="button" onClick={() => setShowPassword((value) => !value)} className="font-bold text-blue-700 hover:underline">{showPassword ? 'Sembunyikan' : 'Lihat'}</button><button type="button" onClick={() => { const value = suggestPassword(); setForm((current) => ({ ...current, password: value, password_confirmation: value })); setShowPassword(true) }} className="font-bold text-blue-700 hover:underline">Buat otomatis</button></span>} />
+              <Field label="Konfirmasi password" type={showPassword ? 'text' : 'password'} value={form.password_confirmation} onChange={(value) => setForm({ ...form, password_confirmation: value })} required minLength="8"
+                hint="Ulangi password awal supaya tidak ada salah ketik."
+                error={formErrors.password?.[0] ? undefined : (passwordMismatch ? 'Konfirmasi password belum sama dengan password awal.' : undefined)} />
+              <Select label="Jenis kelamin" value={form.gender} onChange={(value) => setForm({ ...form, gender: value })} options={genders} placeholder="Pilih jenis kelamin" error={formErrors.gender?.[0]} />
               <Select label="Status awal" value={form.status} onChange={(value) => setForm({ ...form, status: value })} options={statuses} error={formErrors.status?.[0]} />
             </div>
           </Step>
@@ -483,19 +575,54 @@ export default function UsersPage() {
               </div>
             </Step>}
 
+          <Step number="4" title="Kartu perpustakaan dan kontak" description="Foto dan tanggal gabung dipakai pada kartu anggota. Nomor anggota dibuat otomatis oleh sistem.">
+            <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)]">
+              <div className="flex items-start gap-3">
+                {photoPreview
+                  ? <img src={photoPreview} alt="Pratinjau foto anggota" className="h-28 w-24 shrink-0 rounded-2xl border border-slate-200 object-cover" />
+                  : <div className="grid h-28 w-24 shrink-0 place-items-center rounded-2xl border-2 border-dashed border-slate-300 bg-white text-center text-[11px] font-bold text-slate-400">Belum ada foto</div>}
+                <div className="flex flex-col gap-2">
+                  <button type="button" onClick={() => photoInputRef.current?.click()} className="min-h-10 rounded-xl border border-blue-700 px-3 text-xs font-bold text-blue-700 hover:bg-blue-50">{photo ? 'Ganti foto' : 'Pilih foto'}</button>
+                  {photo && <button type="button" onClick={clearPhoto} className="min-h-10 rounded-xl px-3 text-xs font-bold text-red-600 hover:bg-red-50">Hapus foto</button>}
+                  <p className="max-w-[9rem] text-[11px] leading-4 text-slate-500">JPG, PNG, atau WEBP. Maksimal 2 MB. Pakai foto potret agar rapi di kartu.</p>
+                  {formErrors.photo?.[0] && <p className="max-w-[9rem] text-[11px] font-semibold text-red-600">{formErrors.photo[0]}</p>}
+                  <input ref={photoInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => selectPhoto(event.target.files?.[0] ?? null)} className="sr-only" />
+                </div>
+              </div>
+              <div className="grid content-start gap-3 sm:grid-cols-2">
+                <Field label="Nomor HP" value={form.phone} onChange={(value) => setForm({ ...form, phone: value })} hint="Opsional. Contoh: 0812 3456 7890." error={formErrors.phone?.[0]} />
+                <Field label="Email" type="email" value={form.email} onChange={(value) => setForm({ ...form, email: value })} hint="Opsional. Dipakai untuk pemberitahuan." error={formErrors.email?.[0]} />
+                <Field label="Tanggal gabung" type="date" value={form.joined_at} onChange={(value) => setForm({ ...form, joined_at: value })} hint="Bawaan hari ini." error={formErrors.joined_at?.[0]} />
+                <div className="rounded-xl border border-blue-100 bg-blue-50/70 p-3 text-xs">
+                  <p className="font-bold text-blue-900">Nomor anggota</p>
+                  <p className="mt-1 leading-5 text-blue-800">Dibuat otomatis saat disimpan, dengan pola LIB-tahun-ajaran-urutan. Nomornya ditampilkan setelah anggota tersimpan.</p>
+                </div>
+              </div>
+            </div>
+          </Step>
+
           <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-xs text-slate-500">
               {isStudent
                 ? selectedClass ? <>Akan tersimpan sebagai siswa <strong className="text-navy-950">{selectedClass.display_name}</strong> tahun {selectedClass.academic_year}.</> : 'Pilih kelas untuk melanjutkan.'
                 : <>Akan tersimpan sebagai <strong className="text-navy-950">{roleLabel(form.role)}</strong>{form.position ? ` — ${form.position}` : ''}.</>}
             </p>
-            <button disabled={busy} className="min-h-11 rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-60 sm:shrink-0"><BusyLabel busy={busy} busyText="Menyimpan…">Simpan anggota</BusyLabel></button>
+            <button disabled={busy || passwordMismatch} className="min-h-11 rounded-xl bg-blue-700 px-5 font-bold text-white hover:bg-blue-800 disabled:opacity-60 sm:shrink-0"><BusyLabel busy={busy} busyText="Menyimpan…">Simpan anggota</BusyLabel></button>
           </div>
+          {saveProgress && <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-3">
+            {saveProgress.phase === 'upload'
+              ? <ProgressBar value={saveProgress.percent} label="Mengunggah foto anggota" hint="Jangan tutup halaman ini sampai proses selesai." />
+              : <ProgressBar label="Menyimpan data anggota…" hint="Nomor anggota dan kartu sedang dibuat." />}
+          </div>}
         </form>
-      </section>
+      </Panel>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-navy-950">Import anggota</h2><p className="mt-1 text-sm text-slate-500">Template memuat kolom tingkat, jurusan, dan kelas beserta daftar pilihannya.</p></div><span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">XLSX</span></div>
-        <ol className="mt-4 grid grid-cols-3 gap-2 text-center text-[11px] font-bold text-slate-500"><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">1</span>Unduh</li><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">2</span>Isi data</li><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">3</span>Unggah</li></ol>
+      <Panel
+        title="Import anggota"
+        description="Template memuat kolom tingkat, jurusan, dan kelas beserta daftar pilihannya."
+        action={<span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">XLSX</span>}
+      >
+        <ol className="grid grid-cols-3 gap-2 text-center text-[11px] font-bold text-slate-500"><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">1</span>Unduh</li><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">2</span>Isi data</li><li className="rounded-xl bg-slate-50 p-2"><span className="block text-base text-blue-700">3</span>Unggah</li></ol>
         <button type="button" onClick={downloadTemplate} disabled={downloadingTemplate || busy} className="mt-4 min-h-11 w-full rounded-xl border border-blue-700 px-4 text-sm font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-50"><BusyLabel busy={downloadingTemplate} busyText="Mengunduh…">↓ Unduh template XLSX</BusyLabel></button>
         <ul className="mt-3 space-y-1.5 rounded-2xl bg-slate-50 p-3 text-[11px] leading-5 text-slate-600">
           <li><strong className="text-navy-950">Siswa:</strong> isi tingkat, jurusan, dan kelas sekaligus. Pilihannya ada pada sheet <strong>Master</strong>.</li>
@@ -511,7 +638,7 @@ export default function UsersPage() {
             ? <ProgressBar value={importProgress.percent} label="Mengunggah file" hint="Jangan tutup halaman ini sampai proses selesai." />
             : <ProgressBar label="Memproses baris data di server…" hint="Semakin banyak baris, semakin lama prosesnya. Mohon tunggu." />}
         </div>}
-      </section>
+      </Panel>
     </div>}
 
     {importResult && <section className="mt-5 rounded-3xl border border-slate-200 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-black">Hasil import</h2><p className="text-sm text-slate-500">{importResult.filename}</p></div><span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">Selesai</span></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded-2xl bg-slate-50 p-4 text-center"><p className="text-2xl font-black">{importResult.total_rows}</p><p className="text-xs text-slate-500">Total baris</p></div><div className="rounded-2xl bg-emerald-50 p-4 text-center"><p className="text-2xl font-black text-emerald-700">{importResult.success_rows}</p><p className="text-xs text-emerald-700">Anggota baru</p></div><div className="rounded-2xl bg-blue-50 p-4 text-center"><p className="text-2xl font-black text-blue-700">{importResult.updated_rows ?? 0}</p><p className="text-xs text-blue-700">Diperbarui</p></div><div className="rounded-2xl bg-red-50 p-4 text-center"><p className="text-2xl font-black text-red-700">{importResult.failed_rows}</p><p className="text-xs text-red-700">Gagal</p></div></div>{importResult.notes?.length > 0 && <details className="mt-4 overflow-hidden rounded-2xl border border-blue-200"><summary className="cursor-pointer bg-blue-50 px-4 py-3 font-bold text-blue-800">Lihat catatan penyesuaian data ({importResult.notes.length})</summary><div className="max-h-72 divide-y divide-blue-100 overflow-y-auto">{importResult.notes.map((note, index) => <div key={index} className="p-4 text-sm"><p className="font-bold text-slate-900">Baris {note.row_number}{note.username ? ` • ${note.username}` : ''}</p><p className="mt-1 text-slate-600">{note.message}</p></div>)}</div></details>}{importResult.failures?.length > 0 && <details className="mt-4 overflow-hidden rounded-2xl border border-red-200"><summary className="cursor-pointer bg-red-50 px-4 py-3 font-bold text-red-800">Lihat baris yang gagal ({importResult.failures.length})</summary><div className="max-h-72 divide-y divide-red-100 overflow-y-auto">{importResult.failures.map((failure) => <div key={failure.id} className="p-4 text-sm"><p className="font-bold text-slate-900">Baris {failure.row_number}: {failure.row_data?.name ?? failure.row_data?.username ?? 'Data tidak valid'}</p><ul className="mt-1 list-disc pl-5 text-red-700">{Object.values(failure.errors ?? {}).flat().map((item, index) => <li key={index}>{item}</li>)}</ul></div>)}</div></details>}</section>}
@@ -521,14 +648,22 @@ export default function UsersPage() {
 
       {selected.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-blue-100 bg-blue-50 px-4 py-3 text-sm sm:px-5"><div><p className="font-bold text-blue-900">{selected.length} anggota dipilih</p><p className="text-xs text-blue-700">Maksimal 100 anggota dalam sekali cetak atau hapus.</p></div><div className="flex flex-wrap gap-2">{canDelete && <button type="button" onClick={removeSelected} disabled={printingCards || bulkDeleting} className="min-h-10 rounded-xl border border-red-200 bg-white px-3 font-bold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"><BusyLabel busy={bulkDeleting} busyText="Menghapus…">{`Hapus semua (${selected.length})`}</BusyLabel></button>}<button type="button" onClick={() => setSelected([])} disabled={printingCards || bulkDeleting} className="min-h-10 rounded-xl px-3 font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-40">Batalkan pilihan</button></div></div>}
 
-      <div className="hidden md:block"><table className="w-full text-left text-sm"><thead className="text-xs uppercase tracking-wide text-slate-500"><tr><th className="w-14 px-5 py-4"><input type="checkbox" aria-label="Pilih semua anggota pada halaman ini" checked={allPageSelected} disabled={users.length === 0 || loading || printingCards || bulkDeleting} onChange={(event) => togglePage(event.target.checked)} className="h-4 w-4 rounded border-slate-300 accent-blue-700 disabled:opacity-40" /></th><th className="px-3 py-4">Anggota</th><th className="px-3 py-4">Identitas</th><th className="px-3 py-4">Penempatan</th><th className="px-3 py-4">Status</th><th className="px-5 py-4 text-right">Aksi</th></tr></thead><tbody className="divide-y divide-slate-100">{loading && [...Array(5)].map((_, index) => <tr key={index}><td colSpan="6" className="px-5 py-3"><div className="h-14 animate-pulse rounded-xl bg-slate-100" /></td></tr>)}{!loading && users.map((user) => <tr key={user.id} className="hover:bg-slate-50"><td className="px-5 py-4"><input type="checkbox" aria-label={`Pilih ${user.name}`} checked={selected.includes(user.id)} disabled={printingCards || bulkDeleting} onChange={(event) => toggleUser(user.id, event.target.checked)} className="h-4 w-4 rounded border-slate-300 accent-blue-700 disabled:opacity-40" /></td><td className="px-3 py-4"><div className="flex items-center gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-blue-100 font-black text-blue-800">{user.name.charAt(0).toUpperCase()}</div><div><p className="font-bold text-slate-900">{user.name}</p><p className="text-xs text-slate-500">{optionLabel(memberTypes, user.member_type)} • {roleLabel(user.role ?? user.roles?.[0]?.name)}</p></div></div></td><td className="px-3 py-4"><p className="font-mono text-xs font-bold">@{user.username}</p><p className="mt-1 text-xs text-slate-500">{user.nis_nip ?? 'NIS/NIP belum diisi'}</p><p className="text-xs text-slate-400">{user.member_number ?? 'Nomor anggota belum ada'}</p></td><td className="px-3 py-4"><PlacementCell user={user} /></td><td className="px-3 py-4"><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusStyles[user.status] ?? 'bg-slate-100 text-slate-700'}`}>{optionLabel(statuses, user.status)}</span></td><td className="px-5 py-4"><div className="flex justify-end gap-2">{canUpdate && <button type="button" disabled={rowBusy?.id === user.id} onClick={() => toggleStatus(user)} className="min-h-9 rounded-lg border border-amber-300 px-3 text-xs font-bold text-amber-700 disabled:opacity-40"><BusyLabel busy={rowBusy?.id === user.id && rowBusy.action === 'status'} busyText="Menyimpan…" spinnerSize={13}>{user.status === 'active' ? 'Nonaktifkan' : 'Aktifkan'}</BusyLabel></button>}{canDelete && <button type="button" disabled={rowBusy?.id === user.id} onClick={() => remove(user)} className="min-h-9 rounded-lg border border-red-200 px-3 text-xs font-bold text-red-600 disabled:opacity-40"><BusyLabel busy={rowBusy?.id === user.id && rowBusy.action === 'delete'} busyText="Menghapus…" spinnerSize={13}>Hapus</BusyLabel></button>}</div></td></tr>)}</tbody></table></div>
+      <div className="hidden md:block"><table className="w-full text-left text-sm"><thead className="text-xs uppercase tracking-wide text-slate-500"><tr><th className="w-14 px-5 py-4"><input type="checkbox" aria-label="Pilih semua anggota pada halaman ini" checked={allPageSelected} disabled={users.length === 0 || loading || printingCards || bulkDeleting} onChange={(event) => togglePage(event.target.checked)} className="h-4 w-4 rounded border-slate-300 accent-blue-700 disabled:opacity-40" /></th><th className="px-3 py-4">Anggota</th><th className="px-3 py-4">Identitas</th><th className="px-3 py-4">Penempatan</th><th className="px-3 py-4">Status</th><th className="px-5 py-4 text-right">Aksi</th></tr></thead><tbody className="divide-y divide-slate-100">{loading && [...Array(5)].map((_, index) => <tr key={index}><td colSpan="6" className="px-5 py-3"><div className="h-14 animate-pulse rounded-xl bg-slate-100" /></td></tr>)}{!loading && users.map((user) => <tr key={user.id} className="hover:bg-slate-50"><td className="px-5 py-4"><input type="checkbox" aria-label={`Pilih ${user.name}`} checked={selected.includes(user.id)} disabled={printingCards || bulkDeleting} onChange={(event) => toggleUser(user.id, event.target.checked)} className="h-4 w-4 rounded border-slate-300 accent-blue-700 disabled:opacity-40" /></td><td className="px-3 py-4"><div className="flex items-center gap-3"><Avatar user={user} className="h-10 w-10" /><div><p className="font-bold text-slate-900">{user.name}</p><p className="text-xs text-slate-500">{optionLabel(memberTypes, user.member_type)} • {roleLabel(user.role ?? user.roles?.[0]?.name)}{user.gender_label ? ` • ${user.gender_label}` : ''}</p></div></div></td><td className="px-3 py-4"><p className="font-mono text-xs font-bold">@{user.username}</p><p className="mt-1 text-xs text-slate-500">{user.nis_nip ?? 'NIS/NIP belum diisi'}</p><p className="text-xs text-slate-400">{user.member_number ?? 'Nomor anggota belum ada'}</p>{user.phone && <p className="text-xs text-slate-400">{user.phone}</p>}</td><td className="px-3 py-4"><PlacementCell user={user} /></td><td className="px-3 py-4"><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusStyles[user.status] ?? 'bg-slate-100 text-slate-700'}`}>{optionLabel(statuses, user.status)}</span></td><td className="px-5 py-4"><div className="flex justify-end gap-2">{canUpdate && <button type="button" disabled={rowBusy?.id === user.id} onClick={() => toggleStatus(user)} className="min-h-9 rounded-lg border border-amber-300 px-3 text-xs font-bold text-amber-700 disabled:opacity-40"><BusyLabel busy={rowBusy?.id === user.id && rowBusy.action === 'status'} busyText="Menyimpan…" spinnerSize={13}>{user.status === 'active' ? 'Nonaktifkan' : 'Aktifkan'}</BusyLabel></button>}{canDelete && <button type="button" disabled={rowBusy?.id === user.id} onClick={() => remove(user)} className="min-h-9 rounded-lg border border-red-200 px-3 text-xs font-bold text-red-600 disabled:opacity-40"><BusyLabel busy={rowBusy?.id === user.id && rowBusy.action === 'delete'} busyText="Menghapus…" spinnerSize={13}>Hapus</BusyLabel></button>}</div></td></tr>)}</tbody></table></div>
 
-      <div className="divide-y divide-slate-100 md:hidden">{loading && [...Array(4)].map((_, index) => <div key={index} className="p-4"><div className="h-36 animate-pulse rounded-2xl bg-slate-100" /></div>)}{!loading && users.map((user) => <article key={user.id} className="p-4"><div className="rounded-2xl border border-slate-200 p-4"><div className="flex items-start gap-3"><input type="checkbox" aria-label={`Pilih ${user.name}`} checked={selected.includes(user.id)} disabled={printingCards || bulkDeleting} onChange={(event) => toggleUser(user.id, event.target.checked)} className="mt-2 h-6 w-6 shrink-0 rounded border-slate-300 accent-blue-700 disabled:opacity-40" /><div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-blue-100 font-black text-blue-800">{user.name.charAt(0).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-black text-slate-900">{user.name}</p><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusStyles[user.status] ?? 'bg-slate-100 text-slate-700'}`}>{optionLabel(statuses, user.status)}</span></div><p className="mt-0.5 truncate text-sm text-slate-500">@{user.username}</p><div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-3 text-xs"><p><span className="text-slate-500">NIS/NIP</span><br /><span className="font-bold">{user.nis_nip ?? '-'}</span></p><p><span className="text-slate-500">No. anggota</span><br /><span className="font-bold">{user.member_number ?? '-'}</span></p><p><span className="text-slate-500">Tipe</span><br /><span className="font-bold">{optionLabel(memberTypes, user.member_type)}</span></p><p><span className="text-slate-500">Role</span><br /><span className="font-bold">{roleLabel(user.role ?? user.roles?.[0]?.name)}</span></p><p className="col-span-2"><span className="text-slate-500">Penempatan</span><br /><PlacementCell user={user} /></p></div><div className="mt-3 flex gap-2">{canUpdate && <button type="button" disabled={rowBusy?.id === user.id} onClick={() => toggleStatus(user)} className="min-h-10 flex-1 rounded-xl border border-amber-300 px-3 text-xs font-bold text-amber-700 disabled:opacity-40"><BusyLabel busy={rowBusy?.id === user.id && rowBusy.action === 'status'} busyText="Menyimpan…" spinnerSize={13}>{user.status === 'active' ? 'Nonaktifkan' : 'Aktifkan'}</BusyLabel></button>}{canDelete && <button type="button" disabled={rowBusy?.id === user.id} onClick={() => remove(user)} className="min-h-10 rounded-xl border border-red-200 px-4 text-xs font-bold text-red-600 disabled:opacity-40"><BusyLabel busy={rowBusy?.id === user.id && rowBusy.action === 'delete'} busyText="Menghapus…" spinnerSize={13}>Hapus</BusyLabel></button>}</div></div></div></div></article>)}</div>
+      <div className="divide-y divide-slate-100 md:hidden">{loading && [...Array(4)].map((_, index) => <div key={index} className="p-4"><div className="h-36 animate-pulse rounded-2xl bg-slate-100" /></div>)}{!loading && users.map((user) => <article key={user.id} className="p-4"><div className="rounded-2xl border border-slate-200 p-4"><div className="flex items-start gap-3"><input type="checkbox" aria-label={`Pilih ${user.name}`} checked={selected.includes(user.id)} disabled={printingCards || bulkDeleting} onChange={(event) => toggleUser(user.id, event.target.checked)} className="mt-2 h-6 w-6 shrink-0 rounded border-slate-300 accent-blue-700 disabled:opacity-40" /><Avatar user={user} className="h-11 w-11" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-black text-slate-900">{user.name}</p><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusStyles[user.status] ?? 'bg-slate-100 text-slate-700'}`}>{optionLabel(statuses, user.status)}</span></div><p className="mt-0.5 truncate text-sm text-slate-500">@{user.username}</p><div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-3 text-xs"><p><span className="text-slate-500">NIS/NIP</span><br /><span className="font-bold">{user.nis_nip ?? '-'}</span></p><p><span className="text-slate-500">No. anggota</span><br /><span className="font-bold">{user.member_number ?? '-'}</span></p><p><span className="text-slate-500">Tipe</span><br /><span className="font-bold">{optionLabel(memberTypes, user.member_type)}</span></p><p><span className="text-slate-500">Role</span><br /><span className="font-bold">{roleLabel(user.role ?? user.roles?.[0]?.name)}</span></p><p><span className="text-slate-500">Jenis kelamin</span><br /><span className="font-bold">{user.gender_label ?? '-'}</span></p><p><span className="text-slate-500">No. HP</span><br /><span className="font-bold">{user.phone ?? '-'}</span></p><p className="col-span-2"><span className="text-slate-500">Penempatan</span><br /><PlacementCell user={user} /></p></div><div className="mt-3 flex gap-2">{canUpdate && <button type="button" disabled={rowBusy?.id === user.id} onClick={() => toggleStatus(user)} className="min-h-10 flex-1 rounded-xl border border-amber-300 px-3 text-xs font-bold text-amber-700 disabled:opacity-40"><BusyLabel busy={rowBusy?.id === user.id && rowBusy.action === 'status'} busyText="Menyimpan…" spinnerSize={13}>{user.status === 'active' ? 'Nonaktifkan' : 'Aktifkan'}</BusyLabel></button>}{canDelete && <button type="button" disabled={rowBusy?.id === user.id} onClick={() => remove(user)} className="min-h-10 rounded-xl border border-red-200 px-4 text-xs font-bold text-red-600 disabled:opacity-40"><BusyLabel busy={rowBusy?.id === user.id && rowBusy.action === 'delete'} busyText="Menghapus…" spinnerSize={13}>Hapus</BusyLabel></button>}</div></div></div></div></article>)}</div>
 
       {!loading && users.length === 0 && <div className="p-5 sm:p-6"><EmptyState icon="♙" title="Anggota tidak ditemukan" description="Ubah kata pencarian atau filter yang digunakan." /></div>}
       {!loading && pagination.last > 1 && <nav aria-label="Navigasi halaman anggota" className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-4 sm:px-6"><button type="button" disabled={pagination.current <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="min-h-10 rounded-xl border border-slate-300 px-3 text-sm font-bold text-slate-700 disabled:opacity-40 sm:px-4">Sebelumnya</button><p className="text-center text-xs font-semibold text-slate-500 sm:text-sm">Halaman {pagination.current} dari {pagination.last}</p><button type="button" disabled={pagination.current >= pagination.last} onClick={() => setPage((value) => Math.min(pagination.last, value + 1))} className="min-h-10 rounded-xl border border-slate-300 px-3 text-sm font-bold text-slate-700 disabled:opacity-40 sm:px-4">Berikutnya</button></nav>}
     </section>
   </div>
+}
+
+// Foto anggota dipakai pada daftar maupun kartu; inisial nama tetap dipakai bila fotonya belum ada.
+function Avatar({ user, className }) {
+  if (user.photo_path) {
+    return <img src={`${API_URL}/storage/${user.photo_path}`} alt={`Foto ${user.name}`} className={`${className} shrink-0 rounded-full border border-slate-200 object-cover`} />
+  }
+  return <div className={`${className} grid shrink-0 place-items-center rounded-full bg-blue-100 font-black text-blue-800`}>{user.name.charAt(0).toUpperCase()}</div>
 }
 
 function PlacementCell({ user }) {

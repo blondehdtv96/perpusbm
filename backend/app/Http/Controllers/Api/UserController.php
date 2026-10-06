@@ -9,6 +9,7 @@ use App\Services\ActivityLogger;
 use App\Services\MemberService;
 use App\Services\QrCodeService;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -82,17 +83,18 @@ class UserController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $this->validated($request);
-        [$data, $role, $classGroup] = $this->splitPayload($data);
+        [$data, $role, $classGroup, $joinedAt] = $this->splitPayload($data);
         $archived = $this->archivedMemberFor($data);
+        $data = $this->attachPhoto($request, $data, $archived);
 
-        $user = DB::transaction(function () use ($data, $role, $classGroup, $archived): User {
+        $user = DB::transaction(function () use ($data, $role, $classGroup, $joinedAt, $archived): User {
             $user = $archived ?? new User;
             if ($archived) {
                 $archived->restore();
             }
             $user->fill($data)->save();
             $user->syncRoles([$role]);
-            $this->members->syncProfile($user, $classGroup);
+            $this->members->syncProfile($user, $classGroup, $joinedAt);
 
             return $user;
         });
@@ -102,11 +104,14 @@ class UserController extends Controller
             'placement' => $classGroup?->display_name,
         ]);
 
+        $payload = $this->memberPayload($user->fresh(MemberService::RELATIONS));
+
         return response()->json([
-            'message' => $archived
+            'message' => ($archived
                 ? 'Anggota ini pernah dihapus, datanya diaktifkan kembali dengan isian terbaru.'
-                : 'Anggota berhasil ditambahkan.',
-            'data' => $this->memberPayload($user->fresh(MemberService::RELATIONS)),
+                : 'Anggota berhasil ditambahkan.')
+                .' Nomor anggota: '.($payload['member_number'] ?? '-').'.',
+            'data' => $payload,
         ], 201);
     }
 
@@ -120,16 +125,17 @@ class UserController extends Controller
     public function update(Request $request, User $user): JsonResponse
     {
         $data = $this->validated($request, $user);
-        [$data, $role, $classGroup] = $this->splitPayload($data, $user);
+        [$data, $role, $classGroup, $joinedAt] = $this->splitPayload($data, $user);
         if (empty($data['password'])) {
             unset($data['password']);
         }
         $this->guardArchivedConflicts($data, $user);
+        $data = $this->attachPhoto($request, $data, $user);
 
-        DB::transaction(function () use ($data, $role, $classGroup, $user): void {
+        DB::transaction(function () use ($data, $role, $classGroup, $joinedAt, $user): void {
             $user->update($data);
             $user->syncRoles([$role]);
-            $this->members->syncProfile($user, $classGroup);
+            $this->members->syncProfile($user, $classGroup, $joinedAt);
         });
 
         ActivityLogger::log($request, 'user.updated', $user, [
@@ -282,9 +288,11 @@ class UserController extends Controller
         $classGroup = $assignment?->classGroup;
 
         return [
-            ...$member->only('id', 'name', 'nis_nip', 'member_type', 'class_or_position', 'photo_path', 'status'),
+            ...$member->only('id', 'name', 'nis_nip', 'member_type', 'gender', 'class_or_position', 'photo_path', 'status'),
+            'gender_label' => User::GENDERS[$member->gender] ?? null,
             'member_number' => $member->libraryMember?->member_number,
             'member_status' => $member->libraryMember?->status ?? $member->status,
+            'joined_at' => $member->libraryMember?->joined_at?->toDateString(),
             'class_name' => $classGroup?->display_name ?? $member->class_or_position,
             'major' => $classGroup?->major?->name,
             'academic_year' => $assignment?->academicYear?->name,
@@ -302,10 +310,12 @@ class UserController extends Controller
         $classGroup = $assignment?->classGroup;
 
         return [
-            ...$user->only('id', 'name', 'username', 'nis_nip', 'member_type', 'class_or_position', 'photo_path', 'status', 'created_at', 'updated_at'),
+            ...$user->only('id', 'name', 'username', 'nis_nip', 'member_type', 'gender', 'class_or_position', 'email', 'phone', 'photo_path', 'status', 'created_at', 'updated_at'),
+            'gender_label' => User::GENDERS[$user->gender] ?? null,
             'roles' => $user->roles->map(fn ($role) => ['id' => $role->id, 'name' => $role->name])->all(),
             'role' => $user->roles->first()?->name ?? $user->member_type,
             'member_number' => $user->libraryMember?->member_number,
+            'joined_at' => $user->libraryMember?->joined_at?->toDateString(),
             'placement' => $classGroup ? [
                 'class_group_id' => $classGroup->id,
                 'academic_year_id' => $assignment->academic_year_id,
@@ -374,7 +384,9 @@ class UserController extends Controller
         $candidates = [
             'username' => $data['username'] ?? null,
             'nis_nip' => $data['nis_nip'] ?? null,
+            'email' => $data['email'] ?? null,
         ];
+        $labels = ['username' => 'Username', 'nis_nip' => 'NIS/NIP', 'email' => 'Email'];
         $errors = [];
 
         foreach ($candidates as $column => $value) {
@@ -385,7 +397,7 @@ class UserController extends Controller
                 ->when($allowed?->exists, fn ($query) => $query->whereKeyNot($allowed->getKey()))
                 ->first();
             if ($conflict) {
-                $label = $column === 'username' ? 'Username' : 'NIS/NIP';
+                $label = $labels[$column];
                 $errors[$column] = "{$label} {$value} masih tercatat pada anggota terhapus \"{$conflict->name}\". Gunakan {$label} lain atau tambahkan anggota tersebut kembali dengan NIS/NIP yang sama.";
             }
         }
@@ -396,17 +408,19 @@ class UserController extends Controller
     }
 
     /**
-     * Memisahkan isian form menjadi kolom users, role, dan kelas tujuan. Label kelas/jabatan
-     * dihitung di sini supaya satu-satunya sumber kebenarannya adalah master akademik.
+     * Memisahkan isian form menjadi kolom users, role, kelas tujuan, dan tanggal gabung.
+     * Label kelas/jabatan dihitung di sini supaya satu-satunya sumber kebenarannya adalah
+     * master akademik, sedangkan foto diurus terpisah karena datang sebagai berkas unggahan.
      *
-     * @return array{0: array<string, mixed>, 1: string, 2: ?ClassGroup}
+     * @return array{0: array<string, mixed>, 1: string, 2: ?ClassGroup, 3: ?string}
      */
     private function splitPayload(array $data, ?User $user = null): array
     {
         $role = $data['role'];
         $classGroup = $this->members->findActiveClassGroup($data['class_group_id'] ?? null);
         $position = $data['position'] ?? null;
-        unset($data['role'], $data['class_group_id'], $data['position']);
+        $joinedAt = isset($data['joined_at']) ? Carbon::parse($data['joined_at'])->toDateString() : null;
+        unset($data['role'], $data['class_group_id'], $data['position'], $data['joined_at'], $data['photo'], $data['password_confirmation']);
 
         if ($data['member_type'] === 'student') {
             // Pada pembaruan tanpa pemindahan kelas, label kelas yang sudah tercatat dipertahankan.
@@ -417,17 +431,30 @@ class UserController extends Controller
 
         $data['class_or_position'] = $label;
 
-        return [$data, $role, $data['member_type'] === 'student' ? $classGroup : null];
+        return [$data, $role, $data['member_type'] === 'student' ? $classGroup : null, $joinedAt];
+    }
+
+    /**
+     * Foto anggota dipakai kartu perpustakaan, jadi disimpan pada disk publik yang sama
+     * dengan foto profil. Foto lama dihapus agar berkas yatim tidak menumpuk di storage.
+     */
+    private function attachPhoto(Request $request, array $data, ?User $user = null): array
+    {
+        if (! $request->hasFile('photo')) {
+            return $data;
+        }
+
+        $data['photo_path'] = $request->file('photo')->store('profiles', 'public');
+        if ($user?->photo_path && $user->photo_path !== $data['photo_path']) {
+            Storage::disk('public')->delete($user->photo_path);
+        }
+
+        return $data;
     }
 
     private function validated(Request $request, ?User $user = null): array
     {
-        if ($request->has('nis_nip')) {
-            $request->merge(['nis_nip' => User::normalizeNisNip($request->input('nis_nip'))]);
-        }
-        if (is_string($request->input('username'))) {
-            $request->merge(['username' => trim($request->input('username'))]);
-        }
+        $this->normalize($request);
 
         // Kelas wajib saat menambah siswa baru; saat memperbarui, kelas hanya diisi bila
         // anggota memang sedang dipindahkan, atau bila penempatannya belum pernah ada.
@@ -437,9 +464,14 @@ class UserController extends Controller
         return $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/', Rule::unique('users')->ignore($user)->withoutTrashed()],
-            'password' => [$user ? 'nullable' : 'required', 'string', 'min:8'],
+            'password' => [$user ? 'nullable' : 'required', 'string', 'min:8', 'confirmed'],
             'nis_nip' => ['nullable', 'string', 'max:100', Rule::unique('users')->ignore($user)->withoutTrashed()],
             'member_type' => ['required', Rule::in(['student', 'staff'])],
+            'gender' => ['nullable', Rule::in(array_keys(User::GENDERS))],
+            'email' => ['nullable', 'email', 'max:255', Rule::unique('users')->ignore($user)->withoutTrashed()],
+            'phone' => ['nullable', 'string', 'max:30', 'regex:/^[0-9+\-\s()]+$/'],
+            'photo' => ['nullable', 'image', 'max:2048'],
+            'joined_at' => ['nullable', 'date', 'before_or_equal:today'],
             'class_group_id' => [
                 'nullable',
                 'integer',
@@ -453,6 +485,39 @@ class UserController extends Controller
             'class_group_id.required_if' => 'Kelas wajib dipilih untuk anggota siswa. Pilih tingkat, jurusan, lalu kelasnya.',
             'class_group_id.exists' => 'Kelas yang dipilih tidak tersedia atau sedang nonaktif. Muat ulang pilihan kelas.',
             'position.required_if' => 'Jabatan wajib diisi untuk anggota guru atau staf.',
+            'username.required' => 'Username wajib diisi. Bila NIS/NIP sudah diisi, nilainya otomatis dipakai sebagai username.',
+            'password.confirmed' => 'Konfirmasi password belum sama dengan password awal.',
+            'phone.regex' => 'Nomor HP hanya boleh berisi angka, spasi, tanda +, -, dan tanda kurung.',
+            'joined_at.before_or_equal' => 'Tanggal gabung tidak boleh melewati hari ini.',
+            'photo.image' => 'Foto anggota harus berupa gambar (JPG, PNG, atau WEBP).',
+            'photo.max' => 'Ukuran foto anggota maksimal 2 MB.',
         ]);
+    }
+
+    /**
+     * Membereskan isian sebelum divalidasi. NIS/NIP otomatis menjadi username seperti pada
+     * registrasi siswa mandiri, sehingga petugas tidak perlu mengarang username terpisah.
+     */
+    private function normalize(Request $request): void
+    {
+        if ($request->has('nis_nip')) {
+            $request->merge(['nis_nip' => User::normalizeNisNip($request->input('nis_nip'))]);
+        }
+        foreach (['username', 'email', 'phone'] as $field) {
+            if (is_string($request->input($field))) {
+                $request->merge([$field => trim($request->input($field))]);
+            }
+        }
+        if (is_string($request->input('email'))) {
+            $request->merge(['email' => mb_strtolower($request->input('email'))]);
+        }
+        if (! $request->filled('username') && $request->filled('nis_nip')) {
+            $request->merge(['username' => (string) $request->input('nis_nip')]);
+        }
+        foreach (['gender', 'email', 'phone', 'joined_at'] as $field) {
+            if ($request->input($field) === '') {
+                $request->merge([$field => null]);
+            }
+        }
     }
 }

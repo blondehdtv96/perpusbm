@@ -16,11 +16,18 @@ class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
 
+    /** Pilihan jenis kelamin yang dipakai form tambah anggota, validasi, dan kartu perpustakaan. */
+    public const GENDERS = ['L' => 'Laki-laki', 'P' => 'Perempuan'];
+
     protected $fillable = [
-        'name', 'username', 'password', 'nis_nip', 'member_type',
-        'class_or_position', 'photo_path', 'status',
+        'name', 'username', 'password', 'nis_nip', 'member_type', 'gender',
+        'class_or_position', 'email', 'phone', 'photo_path', 'status',
     ];
 
+    /**
+     * Surel dan nomor HP tetap disembunyikan dari payload identitas (login, profil) dan hanya
+     * ditampilkan lewat payload anggota di halaman Anggota, yang memilih kolomnya secara eksplisit.
+     */
     protected $hidden = ['email', 'email_verified_at', 'phone', 'password', 'remember_token', 'member_qr_token'];
 
     protected function casts(): array

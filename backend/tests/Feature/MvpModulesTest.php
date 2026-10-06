@@ -13,6 +13,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -79,7 +80,7 @@ class MvpModulesTest extends TestCase
         $response = $this->actingAs($admin)->postJson('/api/users', [
             'name' => 'Siswa Baru',
             'username' => 'siswa baru',
-            'password' => 'password123',
+            'password' => 'password123', 'password_confirmation' => 'password123',
             'nis_nip' => '3001',
             'member_type' => 'student',
             'status' => 'active',
@@ -107,7 +108,7 @@ class MvpModulesTest extends TestCase
         $this->actingAs($admin)->postJson('/api/users', [
             'name' => 'Nama Baru',
             'username' => 'siswa.baru',
-            'password' => 'password123',
+            'password' => 'password123', 'password_confirmation' => 'password123',
             'nis_nip' => '4001',
             'member_type' => 'student',
             'class_group_id' => $this->classGroup()->id,
@@ -136,7 +137,7 @@ class MvpModulesTest extends TestCase
         $response = $this->actingAs($admin)->postJson('/api/users', [
             'name' => 'Siswa Lain',
             'username' => 'siswa.arsip',
-            'password' => 'password123',
+            'password' => 'password123', 'password_confirmation' => 'password123',
             'nis_nip' => '5002',
             'member_type' => 'student',
             'class_group_id' => $this->classGroup()->id,
@@ -160,7 +161,7 @@ class MvpModulesTest extends TestCase
             $this->actingAs($admin)->postJson('/api/users', [
                 'name' => 'Siswa Tanpa NIS',
                 'username' => $username,
-                'password' => 'password123',
+                'password' => 'password123', 'password_confirmation' => 'password123',
                 'nis_nip' => $nisNip,
                 'member_type' => 'student',
                 'class_group_id' => $class->id,
@@ -226,7 +227,7 @@ class MvpModulesTest extends TestCase
         $response = $this->actingAs($admin)->postJson('/api/users', [
             'name' => 'Rina Pertiwi',
             'username' => 'rina.pertiwi',
-            'password' => 'password123',
+            'password' => 'password123', 'password_confirmation' => 'password123',
             'nis_nip' => '7001',
             'member_type' => 'student',
             'class_group_id' => $class->id,
@@ -250,11 +251,72 @@ class MvpModulesTest extends TestCase
         ]);
     }
 
+    public function test_manual_member_form_stores_complete_member_profile(): void
+    {
+        $this->seed();
+        Storage::fake('public');
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $class = $this->classGroup();
+
+        // Username tidak dikirim: NIS otomatis dipakai sebagai username, seperti registrasi siswa mandiri.
+        $response = $this->actingAs($admin)->post('/api/users', [
+            'name' => 'Sinta Maharani',
+            'password' => 'password123',
+            'password_confirmation' => 'password123',
+            'nis_nip' => '7101',
+            'member_type' => 'student',
+            'gender' => 'P',
+            'email' => ' Sinta@Sekolah.ID ',
+            'phone' => '0812 3456 7890',
+            'joined_at' => '2026-07-15',
+            'class_group_id' => $class->id,
+            'status' => 'active',
+            'role' => 'student',
+            'photo' => UploadedFile::fake()->image('sinta.jpg', 300, 400),
+        ], ['Accept' => 'application/json']);
+
+        $response->assertCreated()
+            ->assertJsonPath('data.username', '7101')
+            ->assertJsonPath('data.gender', 'P')
+            ->assertJsonPath('data.gender_label', 'Perempuan')
+            ->assertJsonPath('data.email', 'sinta@sekolah.id')
+            ->assertJsonPath('data.phone', '0812 3456 7890')
+            ->assertJsonPath('data.joined_at', '2026-07-15');
+        $this->assertStringContainsString('Nomor anggota', (string) $response->json('message'));
+
+        $user = User::where('nis_nip', '7101')->firstOrFail();
+        $this->assertNotNull($user->photo_path);
+        Storage::disk('public')->assertExists($user->photo_path);
+        $this->assertDatabaseHas('library_members', ['user_id' => $user->id, 'joined_at' => '2026-07-15 00:00:00']);
+    }
+
+    public function test_manual_member_form_rejects_mismatched_password_and_invalid_profile_fields(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $class = $this->classGroup();
+        $base = [
+            'name' => 'Budi Santoso', 'username' => 'budi.santoso', 'member_type' => 'student',
+            'class_group_id' => $class->id, 'status' => 'active', 'role' => 'student',
+        ];
+
+        $this->actingAs($admin)->postJson('/api/users', [
+            ...$base, 'password' => 'password123', 'password_confirmation' => 'password124',
+        ])->assertStatus(422)->assertJsonPath('errors.password.0', 'Konfirmasi password belum sama dengan password awal.');
+
+        $this->actingAs($admin)->postJson('/api/users', [
+            ...$base, 'password' => 'password123', 'password_confirmation' => 'password123',
+            'gender' => 'X', 'phone' => 'nol delapan', 'email' => 'bukan-email', 'joined_at' => now()->addDay()->toDateString(),
+        ])->assertStatus(422)->assertJsonValidationErrors(['gender', 'phone', 'email', 'joined_at']);
+
+        $this->assertDatabaseMissing('users', ['username' => 'budi.santoso']);
+    }
+
     public function test_student_needs_a_class_and_staff_needs_a_position(): void
     {
         $this->seed();
         $admin = User::where('username', 'admin')->firstOrFail();
-        $base = ['password' => 'password123', 'status' => 'active'];
+        $base = ['password' => 'password123', 'password_confirmation' => 'password123', 'status' => 'active'];
 
         $this->actingAs($admin)->postJson('/api/users', [
             ...$base, 'name' => 'Siswa Tanpa Kelas', 'username' => 'siswa.tanpa.kelas', 'member_type' => 'student', 'role' => 'student',
@@ -281,7 +343,7 @@ class MvpModulesTest extends TestCase
         $to = $this->classGroup('DKV');
 
         $this->actingAs($admin)->postJson('/api/users', [
-            'name' => 'Agus Saputra', 'username' => 'agus.saputra', 'password' => 'password123', 'nis_nip' => '7002',
+            'name' => 'Agus Saputra', 'username' => 'agus.saputra', 'password' => 'password123', 'password_confirmation' => 'password123', 'nis_nip' => '7002',
             'member_type' => 'student', 'class_group_id' => $from->id, 'status' => 'active', 'role' => 'student',
         ])->assertCreated();
         $user = User::where('username', 'agus.saputra')->firstOrFail();
@@ -309,7 +371,7 @@ class MvpModulesTest extends TestCase
         $admin = User::where('username', 'admin')->firstOrFail();
         $class = $this->classGroup();
         $this->actingAs($admin)->postJson('/api/users', [
-            'name' => 'Dewi Lestari', 'username' => 'dewi.lestari', 'password' => 'password123', 'nis_nip' => '7003',
+            'name' => 'Dewi Lestari', 'username' => 'dewi.lestari', 'password' => 'password123', 'password_confirmation' => 'password123', 'nis_nip' => '7003',
             'member_type' => 'student', 'class_group_id' => $class->id, 'status' => 'active', 'role' => 'student',
         ])->assertCreated();
         $user = User::where('username', 'dewi.lestari')->firstOrFail();

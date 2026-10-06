@@ -203,6 +203,8 @@ return [
         'nis' => 'NIS',
         'nip' => 'NIP',
         'member_type' => 'Tipe anggota',
+        'gender' => 'Jenis kelamin',
+        'joined_at' => 'Tanggal gabung',
         'class_or_position' => 'Kelas/Jabatan',
         'status' => 'Status',
         'role' => 'Role',

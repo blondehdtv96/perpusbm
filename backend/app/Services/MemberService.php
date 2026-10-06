@@ -24,7 +24,7 @@ class MemberService
     /** Relasi yang dibutuhkan untuk menampilkan anggota beserta penempatan kelasnya. */
     public const RELATIONS = [
         'roles:id,name',
-        'libraryMember:id,user_id,member_number,status',
+        'libraryMember:id,user_id,member_number,status,joined_at',
         'student.currentAssignment.academicYear:id,name',
         'student.currentAssignment.classGroup.educationLevel:id,name',
         'student.currentAssignment.classGroup.major:id,code,name',
@@ -102,11 +102,12 @@ class MemberService
     /**
      * Pasang seluruh profil keanggotaan setelah baris users tersimpan: nomor anggota untuk
      * semua tipe, dan khusus siswa juga data siswa beserta penempatan kelas aktifnya.
+     * Tanggal gabung hanya ditulis bila form mengirimkannya, selebihnya memakai tanggal hari ini.
      */
-    public function syncProfile(User $user, ?ClassGroup $classGroup = null): User
+    public function syncProfile(User $user, ?ClassGroup $classGroup = null, ?string $joinedAt = null): User
     {
-        return DB::transaction(function () use ($user, $classGroup): User {
-            $this->ensureMemberNumber($user);
+        return DB::transaction(function () use ($user, $classGroup, $joinedAt): User {
+            $this->ensureMemberNumber($user, $joinedAt);
 
             if ($user->member_type !== 'student') {
                 $this->endActiveAssignments($user);
@@ -123,13 +124,20 @@ class MemberService
     }
 
     /** Setiap anggota punya nomor anggota agar kartu dan pencarian manual selalu punya pegangan. */
-    public function ensureMemberNumber(User $user): LibraryMember
+    public function ensureMemberNumber(User $user, ?string $joinedAt = null): LibraryMember
     {
         $member = $user->libraryMember()->first();
 
         if ($member) {
+            $changes = [];
             if ($member->status !== $user->status) {
-                $member->update(['status' => $user->status]);
+                $changes['status'] = $user->status;
+            }
+            if ($joinedAt !== null && $member->joined_at?->toDateString() !== $joinedAt) {
+                $changes['joined_at'] = $joinedAt;
+            }
+            if ($changes) {
+                $member->update($changes);
             }
 
             return $member;
@@ -139,7 +147,7 @@ class MemberService
             'user_id' => $user->id,
             'member_number' => $this->nextMemberNumber($user),
             'status' => $user->status ?? 'active',
-            'joined_at' => now()->toDateString(),
+            'joined_at' => $joinedAt ?? now()->toDateString(),
         ]);
         $user->setRelation('libraryMember', $member);
 
