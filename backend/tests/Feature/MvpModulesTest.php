@@ -385,6 +385,49 @@ class MvpModulesTest extends TestCase
         $this->actingAs($admin)->patchJson("/api/users/{$admin->id}/status", ['status' => 'inactive'])->assertStatus(422);
     }
 
+    public function test_only_super_admin_can_create_admin_accounts(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $librarian = User::factory()->create(['username' => 'pustakawan', 'member_type' => 'staff']);
+        $librarian->assignRole('librarian');
+        $account = [
+            'name' => 'Petugas Baru', 'password' => 'password123', 'password_confirmation' => 'password123',
+            'member_type' => 'staff', 'position' => 'Pustakawan', 'status' => 'active',
+        ];
+
+        // Pustakawan punya izin users.create, tetapi tidak boleh membuat akun berhak akses penuh.
+        $this->actingAs($librarian)->postJson('/api/users', [...$account, 'username' => 'eskalasi', 'role' => 'super_admin'])->assertForbidden();
+        $this->actingAs($librarian)->postJson('/api/users', [...$account, 'username' => 'eskalasi2', 'role' => 'librarian'])->assertForbidden();
+        $this->assertDatabaseMissing('users', ['username' => 'eskalasi']);
+
+        // Pustakawan tetap boleh menambah anggota guru/staf biasa.
+        $this->actingAs($librarian)->postJson('/api/users', [...$account, 'username' => 'guru.biasa', 'role' => 'staff'])->assertCreated();
+
+        $this->actingAs($admin)->postJson('/api/users', [...$account, 'username' => 'pustakawan.dua', 'role' => 'librarian'])
+            ->assertCreated()->assertJsonPath('data.role', 'librarian');
+
+        // Mengubah akun admin yang sudah ada juga hanya boleh dilakukan Super Admin.
+        $this->actingAs($librarian)->putJson("/api/users/{$librarian->id}", [
+            ...$account, 'username' => 'pustakawan', 'role' => 'staff', 'password' => '', 'password_confirmation' => '',
+        ])->assertForbidden();
+    }
+
+    public function test_member_list_can_be_filtered_by_role(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $librarian = User::factory()->create(['username' => 'pustakawan', 'member_type' => 'staff']);
+        $librarian->assignRole('librarian');
+        User::factory()->create(['username' => 'siswa.satu', 'member_type' => 'student'])->assignRole('student');
+
+        $response = $this->actingAs($admin)->getJson('/api/users?role=super_admin,librarian')->assertOk();
+        $usernames = collect($response->json('data'))->pluck('username')->all();
+
+        $this->assertEqualsCanonicalizing(['admin', 'pustakawan'], $usernames);
+        $this->actingAs($admin)->getJson('/api/users?role=student')->assertOk()->assertJsonPath('data.0.username', 'siswa.satu');
+    }
+
     public function test_form_options_only_expose_active_academic_master_data(): void
     {
         $this->seed();

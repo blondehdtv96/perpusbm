@@ -8,6 +8,7 @@ import { Spinner } from './components/ui'
 
 const AccessDeniedPage = lazy(() => import('./pages/AccessDeniedPage'))
 const AcademicMasterPage = lazy(() => import('./pages/AcademicMasterPage'))
+const AdminsPage = lazy(() => import('./pages/AdminsPage'))
 const AuditPage = lazy(() => import('./pages/AuditPage'))
 const CatalogPage = lazy(() => import('./pages/CatalogPage'))
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
@@ -15,6 +16,7 @@ const FinesPage = lazy(() => import('./pages/FinesPage'))
 const InventoryPage = lazy(() => import('./pages/InventoryPage'))
 const LoansPage = lazy(() => import('./pages/LoansPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
+const MembersPage = lazy(() => import('./pages/MembersPage'))
 const NotificationsPage = lazy(() => import('./pages/NotificationsPage'))
 const ProfilePage = lazy(() => import('./pages/ProfilePage'))
 const RegisterPage = lazy(() => import('./pages/RegisterPage'))
@@ -55,7 +57,9 @@ export default function App() {
             <Route index element={<DashboardPage />} />
             <Route path="academic" element={<PermissionPage any={['academic.manage']}><AcademicMasterPage /></PermissionPage>} />
             <Route path="catalog" element={<CatalogPage />} />
-            <Route path="users" element={<PermissionPage any={['users.view']}><UsersPage /></PermissionPage>} />
+            <Route path="members" element={<PermissionPage any={['users.view']}><MembersPage /></PermissionPage>} />
+            <Route path="users" element={<PermissionPage any={['users.create']}><UsersPage /></PermissionPage>} />
+            <Route path="admins" element={<PermissionPage any={['roles.manage']}><AdminsPage /></PermissionPage>} />
             <Route path="inventory" element={<PermissionPage any={['catalog.create']}><InventoryPage /></PermissionPage>} />
             <Route path="scan" element={<PermissionPage any={['circulation.borrow', 'circulation.return']}><ScanPage /></PermissionPage>} />
             <Route path="loans" element={<LoansPage />} />

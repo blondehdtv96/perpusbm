@@ -33,6 +33,11 @@ class UserController extends Controller
             })
             ->when($request->string('member_type')->toString(), fn ($q, $type) => $q->where('member_type', $type))
             ->when($request->string('status')->toString(), fn ($q, $status) => $q->where('status', $status))
+            // Halaman Admin & Petugas menyaring beberapa role sekaligus, misalnya "super_admin,librarian".
+            ->when($request->string('role')->toString(), function ($query, string $role): void {
+                $names = array_values(array_filter(array_map('trim', explode(',', $role))));
+                $query->whereHas('roles', fn ($q) => $q->whereIn('name', $names));
+            })
             ->when($request->integer('class_group_id'), fn ($q, int $classGroupId) => $q->whereHas(
                 'student.assignments',
                 fn ($assignment) => $assignment->where('is_active', true)->where('class_group_id', $classGroupId),
@@ -84,6 +89,7 @@ class UserController extends Controller
     {
         $data = $this->validated($request);
         [$data, $role, $classGroup, $joinedAt] = $this->splitPayload($data);
+        $this->guardRoleAssignment($request, $role);
         $archived = $this->archivedMemberFor($data);
         $data = $this->attachPhoto($request, $data, $archived);
 
@@ -126,6 +132,7 @@ class UserController extends Controller
     {
         $data = $this->validated($request, $user);
         [$data, $role, $classGroup, $joinedAt] = $this->splitPayload($data, $user);
+        $this->guardRoleAssignment($request, $role, $user);
         if (empty($data['password'])) {
             unset($data['password']);
         }
@@ -351,6 +358,24 @@ class UserController extends Controller
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * Role pustakawan dan super admin hanya boleh diberikan oleh pemegang izin roles.manage,
+     * yaitu Super Admin. Tanpa penjagaan ini, petugas dengan izin users.create dapat membuat
+     * akun berhak akses penuh lewat form anggota dan menaikkan hak aksesnya sendiri.
+     */
+    private function guardRoleAssignment(Request $request, string $role, ?User $user = null): void
+    {
+        $privileged = ['super_admin', 'librarian'];
+        $changing = in_array($role, $privileged, true)
+            || ($user && $user->roles->pluck('name')->intersect($privileged)->isNotEmpty());
+
+        abort_if(
+            $changing && ! $request->user()->can('roles.manage'),
+            403,
+            'Hanya Super Admin yang dapat menambah atau mengubah akun admin dan pustakawan.',
+        );
     }
 
     /**

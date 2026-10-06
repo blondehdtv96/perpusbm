@@ -164,7 +164,7 @@ Laravel 12 REST API
 
 **Siswa/Guru/Staff:** Login, Beranda, Katalog, Detail Buku, Pinjaman, Riwayat, Denda, Notifikasi, Kartu Anggota, dan Profil. Navigasi utama menggunakan bottom bar.
 
-**Pustakawan/Admin:** Dashboard, Scan, Anggota, Buku, Eksemplar, Sirkulasi, Denda, Laporan, Pengaturan, dan Audit. Desktop memakai sidebar collapsible; mobile memakai bottom navigation/menu ringkas dengan FAB Scan.
+**Pustakawan/Admin:** Dashboard, Scan, Daftar Anggota, Tambah Anggota, Buku, Eksemplar, Sirkulasi, Denda, Laporan, Admin & Petugas (khusus Super Admin), Pengaturan, dan Audit. Desktop memakai sidebar collapsible; mobile memakai bottom navigation/menu ringkas dengan FAB Scan.
 
 Layar scan wajib memiliki izin kamera, pemilih kamera, bingkai scan, bunyi/getar opsional, status proses, hasil jelas, tombol ulang, serta input kode manual sebagai fallback. Semua layar menyediakan state loading, kosong, error, dan akses ditolak. Target sentuh minimal 44×44 px.
 
