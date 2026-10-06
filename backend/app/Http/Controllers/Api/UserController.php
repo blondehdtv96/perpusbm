@@ -3,8 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ClassGroup;
 use App\Models\User;
 use App\Services\ActivityLogger;
+use App\Services\MemberService;
 use App\Services\QrCodeService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
@@ -18,9 +20,11 @@ use Symfony\Component\HttpFoundation\Response;
 
 class UserController extends Controller
 {
+    public function __construct(private readonly MemberService $members) {}
+
     public function index(Request $request): JsonResponse
     {
-        $users = User::query()->with('roles:id,name')
+        $users = User::query()->with(MemberService::RELATIONS)
             ->when($request->string('search')->toString(), function ($query, string $search): void {
                 $query->where(fn ($q) => $q->where('name', 'like', "%{$search}%")
                     ->orWhere('username', 'like', "%{$search}%")
@@ -28,9 +32,23 @@ class UserController extends Controller
             })
             ->when($request->string('member_type')->toString(), fn ($q, $type) => $q->where('member_type', $type))
             ->when($request->string('status')->toString(), fn ($q, $status) => $q->where('status', $status))
-            ->latest()->paginate(min($request->integer('per_page', 20), 100));
+            ->when($request->integer('class_group_id'), fn ($q, int $classGroupId) => $q->whereHas(
+                'student.assignments',
+                fn ($assignment) => $assignment->where('is_active', true)->where('class_group_id', $classGroupId),
+            ))
+            ->latest()->paginate(min($request->integer('per_page', 20), 100))
+            ->through(fn (User $user) => $this->memberPayload($user));
 
         return response()->json($users);
+    }
+
+    /**
+     * Pilihan isian form tambah anggota: tahun ajaran, tingkat, jurusan, dan kelas aktif.
+     * Form memakai daftar kelas ini untuk menyaring pilihan secara bertingkat di sisi klien.
+     */
+    public function formOptions(): JsonResponse
+    {
+        return response()->json(['data' => $this->members->formOptions()]);
     }
 
     /**
@@ -56,54 +74,86 @@ class UserController extends Controller
             'suspended' => (int) $counts->suspended,
             'inactive' => (int) $counts->inactive,
             'archived' => User::onlyTrashed()->count(),
+            'unplaced_students' => User::query()->where('member_type', 'student')
+                ->whereDoesntHave('student.assignments', fn ($query) => $query->where('is_active', true))->count(),
         ]]);
     }
 
     public function store(Request $request): JsonResponse
     {
         $data = $this->validated($request);
-        $role = $data['role'];
-        unset($data['role']);
+        [$data, $role, $classGroup] = $this->splitPayload($data);
         $archived = $this->archivedMemberFor($data);
-        $user = DB::transaction(function () use ($data, $role, $archived): User {
+
+        $user = DB::transaction(function () use ($data, $role, $classGroup, $archived): User {
             $user = $archived ?? new User;
             if ($archived) {
                 $archived->restore();
             }
             $user->fill($data)->save();
             $user->syncRoles([$role]);
+            $this->members->syncProfile($user, $classGroup);
 
             return $user;
         });
-        ActivityLogger::log($request, $archived ? 'user.restored' : 'user.created', $user, $user->only('name', 'username', 'member_type', 'status'));
+
+        ActivityLogger::log($request, $archived ? 'user.restored' : 'user.created', $user, [
+            ...$user->only('name', 'username', 'member_type', 'status'),
+            'placement' => $classGroup?->display_name,
+        ]);
 
         return response()->json([
             'message' => $archived
                 ? 'Anggota ini pernah dihapus, datanya diaktifkan kembali dengan isian terbaru.'
                 : 'Anggota berhasil ditambahkan.',
-            'data' => $user->load('roles:id,name'),
+            'data' => $this->memberPayload($user->fresh(MemberService::RELATIONS)),
         ], 201);
     }
 
     public function show(User $user): JsonResponse
     {
-        return response()->json(['data' => $user->load('roles:id,name')->loadCount(['loans'])]);
+        $user->load(MemberService::RELATIONS)->loadCount(['loans']);
+
+        return response()->json(['data' => [...$this->memberPayload($user), 'loans_count' => $user->loans_count]]);
     }
 
     public function update(Request $request, User $user): JsonResponse
     {
         $data = $this->validated($request, $user);
-        $role = $data['role'];
-        unset($data['role']);
+        [$data, $role, $classGroup] = $this->splitPayload($data, $user);
         if (empty($data['password'])) {
             unset($data['password']);
         }
         $this->guardArchivedConflicts($data, $user);
-        $user->update($data);
-        $user->syncRoles([$role]);
-        ActivityLogger::log($request, 'user.updated', $user, $user->only('name', 'username', 'member_type', 'status'));
 
-        return response()->json(['data' => $user->fresh()->load('roles:id,name')]);
+        DB::transaction(function () use ($data, $role, $classGroup, $user): void {
+            $user->update($data);
+            $user->syncRoles([$role]);
+            $this->members->syncProfile($user, $classGroup);
+        });
+
+        ActivityLogger::log($request, 'user.updated', $user, [
+            ...$user->only('name', 'username', 'member_type', 'status'),
+            'placement' => $classGroup?->display_name,
+        ]);
+
+        return response()->json(['data' => $this->memberPayload($user->fresh(MemberService::RELATIONS))]);
+    }
+
+    /**
+     * Mengubah status anggota tanpa mengirim ulang seluruh isian form: daftar anggota hanya
+     * perlu status barunya, sehingga penempatan kelas dan password tidak pernah ikut tersentuh.
+     */
+    public function updateStatus(Request $request, User $user): JsonResponse
+    {
+        $data = $request->validate(['status' => ['required', Rule::in(['active', 'suspended', 'inactive'])]]);
+        abort_if($user->is($request->user()) && $data['status'] !== 'active', 422, 'Status akun sendiri tidak dapat diubah.');
+
+        $user->update($data);
+        $user->libraryMember()->first()?->update(['status' => $data['status']]);
+        ActivityLogger::log($request, 'user.status_changed', $user, ['status' => $data['status']]);
+
+        return response()->json(['data' => $this->memberPayload($user->fresh(MemberService::RELATIONS))]);
     }
 
     public function destroy(Request $request, User $user): JsonResponse
@@ -242,6 +292,35 @@ class UserController extends Controller
         ];
     }
 
+    /**
+     * Bentuk anggota yang dipakai daftar dan form: kolom users apa adanya ditambah
+     * penempatan kelas terstruktur, supaya frontend tidak perlu membaca relasi bersarang.
+     */
+    private function memberPayload(User $user): array
+    {
+        $assignment = $user->student?->currentAssignment;
+        $classGroup = $assignment?->classGroup;
+
+        return [
+            ...$user->only('id', 'name', 'username', 'nis_nip', 'member_type', 'class_or_position', 'photo_path', 'status', 'created_at', 'updated_at'),
+            'roles' => $user->roles->map(fn ($role) => ['id' => $role->id, 'name' => $role->name])->all(),
+            'role' => $user->roles->first()?->name ?? $user->member_type,
+            'member_number' => $user->libraryMember?->member_number,
+            'placement' => $classGroup ? [
+                'class_group_id' => $classGroup->id,
+                'academic_year_id' => $assignment->academic_year_id,
+                'education_level_id' => $classGroup->education_level_id,
+                'major_id' => $classGroup->major_id,
+                'class_name' => $classGroup->display_name,
+                'level' => $classGroup->educationLevel?->name,
+                'major_code' => $classGroup->major?->code,
+                'major' => $classGroup->major?->name,
+                'group_name' => $classGroup->group_name,
+                'academic_year' => $assignment->academicYear?->name,
+            ] : null,
+        ];
+    }
+
     private function photoDataUri(?string $path): ?string
     {
         if (! $path) {
@@ -316,6 +395,31 @@ class UserController extends Controller
         }
     }
 
+    /**
+     * Memisahkan isian form menjadi kolom users, role, dan kelas tujuan. Label kelas/jabatan
+     * dihitung di sini supaya satu-satunya sumber kebenarannya adalah master akademik.
+     *
+     * @return array{0: array<string, mixed>, 1: string, 2: ?ClassGroup}
+     */
+    private function splitPayload(array $data, ?User $user = null): array
+    {
+        $role = $data['role'];
+        $classGroup = $this->members->findActiveClassGroup($data['class_group_id'] ?? null);
+        $position = $data['position'] ?? null;
+        unset($data['role'], $data['class_group_id'], $data['position']);
+
+        if ($data['member_type'] === 'student') {
+            // Pada pembaruan tanpa pemindahan kelas, label kelas yang sudah tercatat dipertahankan.
+            $label = $this->members->placementLabel($classGroup, null) ?? $user?->class_or_position;
+        } else {
+            $label = $this->members->placementLabel(null, $position);
+        }
+
+        $data['class_or_position'] = $label;
+
+        return [$data, $role, $data['member_type'] === 'student' ? $classGroup : null];
+    }
+
     private function validated(Request $request, ?User $user = null): array
     {
         if ($request->has('nis_nip')) {
@@ -325,15 +429,30 @@ class UserController extends Controller
             $request->merge(['username' => trim($request->input('username'))]);
         }
 
+        // Kelas wajib saat menambah siswa baru; saat memperbarui, kelas hanya diisi bila
+        // anggota memang sedang dipindahkan, atau bila penempatannya belum pernah ada.
+        $classRequired = $user === null || ! $this->members->hasActivePlacement($user);
+        $activeClasses = Rule::exists('class_groups', 'id')->where(fn ($query) => $query->where('is_active', true));
+
         return $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'username' => ['required', 'string', 'min:3', 'max:100', 'regex:/^[a-zA-Z0-9._-]+$/', Rule::unique('users')->ignore($user)->withoutTrashed()],
             'password' => [$user ? 'nullable' : 'required', 'string', 'min:8'],
             'nis_nip' => ['nullable', 'string', 'max:100', Rule::unique('users')->ignore($user)->withoutTrashed()],
             'member_type' => ['required', Rule::in(['student', 'staff'])],
-            'class_or_position' => ['nullable', 'string', 'max:255'],
+            'class_group_id' => [
+                'nullable',
+                'integer',
+                $classRequired ? 'required_if:member_type,student' : 'sometimes',
+                $activeClasses,
+            ],
+            'position' => ['nullable', 'required_if:member_type,staff', 'string', 'max:255'],
             'status' => ['required', Rule::in(['active', 'suspended', 'inactive'])],
             'role' => ['required', Rule::in(['super_admin', 'librarian', 'staff', 'student'])],
+        ], [
+            'class_group_id.required_if' => 'Kelas wajib dipilih untuk anggota siswa. Pilih tingkat, jurusan, lalu kelasnya.',
+            'class_group_id.exists' => 'Kelas yang dipilih tidak tersedia atau sedang nonaktif. Muat ulang pilihan kelas.',
+            'position.required_if' => 'Jabatan wajib diisi untuk anggota guru atau staf.',
         ]);
     }
 }

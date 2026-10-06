@@ -51,10 +51,12 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/users', [UserController::class, 'index'])->middleware('permission:users.view');
     Route::post('/users', [UserController::class, 'store'])->middleware('permission:users.create');
     Route::get('/users/stats', [UserController::class, 'stats'])->middleware('permission:users.view');
+    Route::get('/users/form-options', [UserController::class, 'formOptions'])->middleware('permission:users.view');
     Route::post('/users/cards/print', [UserController::class, 'printCards'])->middleware('permission:users.view');
     Route::post('/users/bulk-delete', [UserController::class, 'bulkDestroy'])->middleware('permission:users.delete');
     Route::get('/users/{user}', [UserController::class, 'show'])->middleware('permission:users.view');
     Route::put('/users/{user}', [UserController::class, 'update'])->middleware('permission:users.update');
+    Route::patch('/users/{user}/status', [UserController::class, 'updateStatus'])->middleware('permission:users.update');
     Route::delete('/users/{user}', [UserController::class, 'destroy'])->middleware('permission:users.delete');
     Route::get('/users/{user}/card', [UserController::class, 'card'])->middleware('permission:users.view');
     Route::post('/users/{user}/rotate-qr', [UserController::class, 'rotateQr'])->middleware('permission:users.update');
