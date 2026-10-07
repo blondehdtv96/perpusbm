@@ -4,6 +4,7 @@ import { BusyLabel, Feedback, PageHeader, Panel, ProgressBar } from '../componen
 import { Field, PhotoPicker, Select, StatIcon, Step } from '../components/members'
 import { errorLines, errorText, genders, roleLabel, statuses, suggestPassword, today, usePhotoPicker } from '../lib/members'
 import { api, download } from '../lib/api'
+import { formatDate } from '../lib/format'
 import { useAuth } from '../store/auth'
 
 const initialForm = {
@@ -36,6 +37,10 @@ export default function UsersPage() {
   const [saveProgress, setSaveProgress] = useState(null)
   const [importFile, setImportFile] = useState(null)
   const [importResult, setImportResult] = useState(null)
+  const [updateExisting, setUpdateExisting] = useState(false)
+  const [importHistory, setImportHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [openHistoryId, setOpenHistoryId] = useState(null)
   const [dragging, setDragging] = useState(false)
   const [downloadingTemplate, setDownloadingTemplate] = useState(false)
   const [message, setMessage] = useState('')
@@ -70,10 +75,33 @@ export default function UsersPage() {
     }
   }, [])
 
+  // Riwayat import disimpan di server, jadi hasil import sebelumnya tetap bisa dibuka
+  // walaupun petugas sudah menjalankan import berikutnya.
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true)
+    try {
+      const response = await api('/api/imports/users?per_page=10', { silent: true })
+      setImportHistory(response.data ?? [])
+    } catch { /* riwayat bersifat pelengkap, kegagalannya tidak boleh mengganggu halaman */ } finally {
+      setHistoryLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
-    const timer = window.setTimeout(loadOptions, 0)
+    const timer = window.setTimeout(() => { loadOptions(); loadHistory() }, 0)
     return () => window.clearTimeout(timer)
-  }, [loadOptions])
+  }, [loadOptions, loadHistory])
+
+  const openHistory = async (job) => {
+    if (openHistoryId === job.id) return
+    setError('')
+    setOpenHistoryId(job.id)
+    setImportResult(job)
+    try {
+      const response = await api(`/api/imports/users/${job.id}`, { silent: true })
+      setImportResult(response.data)
+    } catch (reason) { setError(errorText(reason)) }
+  }
 
   const classesForForm = useMemo(() => options.classes.filter((item) => (
     (!form.academic_year_id || String(item.academic_year_id) === form.academic_year_id)
@@ -209,7 +237,6 @@ export default function UsersPage() {
   }
 
   const selectImportFile = (file) => {
-    setImportResult(null)
     setError('')
     if (!file) {
       setImportFile(null)
@@ -232,9 +259,9 @@ export default function UsersPage() {
     if (!importFile) return
     const body = new FormData()
     body.append('file', importFile)
+    body.append('update_existing', updateExisting ? '1' : '0')
     setBusy(true)
     setError('')
-    setImportResult(null)
     setImportProgress({ percent: 0, phase: 'upload' })
     try {
       const response = await api('/api/imports/users', {
@@ -243,10 +270,11 @@ export default function UsersPage() {
         onProgress: (percent, phase) => setImportProgress(phase === 'done' ? { percent: 100, phase: 'processing' } : { percent, phase }),
       })
       setImportResult(response.data)
-      setMessage(`Impor selesai: ${response.data.success_rows} anggota baru, ${response.data.updated_rows ?? 0} diperbarui, dan ${response.data.failed_rows} gagal.`)
+      setOpenHistoryId(response.data.id)
+      setMessage(`Impor selesai: ${response.data.success_rows} anggota baru, ${response.data.updated_rows ?? 0} diperbarui, dan ${response.data.failed_rows} gagal. Hasil ini tersimpan di riwayat import.`)
       setImportFile(null)
       if (fileInputRef.current) fileInputRef.current.value = ''
-      await loadOptions()
+      await Promise.all([loadOptions(), loadHistory()])
     } catch (reason) { setError(errorLines(reason)) } finally { setBusy(false); setImportProgress(null) }
   }
 
@@ -389,7 +417,14 @@ export default function UsersPage() {
           <li><strong className="text-navy-950">Guru / staf:</strong> isi kolom jabatan, biarkan kolom kelas kosong.</li>
           <li>Tingkat, jurusan, dan rombel yang belum terdaftar dibuatkan otomatis pada tahun ajaran aktif, lalu dicatat di hasil import — periksa ejaannya sebelum mengunggah.</li>
           <li>Template lama tetap diterima, termasuk yang memisah tingkat, jurusan, dan kelas.</li>
+          <li><strong className="text-navy-950">Import berulang aman:</strong> anggota yang sudah terdaftar hanya dilengkapi pada bagian yang masih kosong, data lama dan penempatan kelasnya tetap disimpan.</li>
         </ul>
+        <label className="mt-3 flex items-start gap-3 rounded-2xl border border-slate-200 bg-white p-3">
+          <input type="checkbox" checked={updateExisting} onChange={(event) => setUpdateExisting(event.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-blue-700" />
+          <span className="text-[11px] leading-5 text-slate-600"><strong className="block text-xs text-navy-950">Perbarui data anggota yang sudah terdaftar</strong>{updateExisting
+            ? 'Isi berkas akan menimpa nama, tipe, NIS/NIP, serta kelas anggota yang sudah ada. Password lama tetap dipakai.'
+            : 'Biarkan kosong agar data anggota yang sudah ada tidak tertimpa saat berkas yang sama diimport lagi.'}</span>
+        </label>
         <div role="button" tabIndex="0" onClick={() => fileInputRef.current?.click()} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') fileInputRef.current?.click() }} onDragEnter={(event) => { event.preventDefault(); setDragging(true) }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); selectImportFile(event.dataTransfer.files?.[0]) }} className={`mt-4 cursor-pointer rounded-2xl border-2 border-dashed p-5 text-center transition ${dragging ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50 hover:border-blue-400'}`}><div className="text-2xl text-blue-700" aria-hidden="true">⇧</div><p className="mt-2 text-sm font-bold">Tarik file ke sini atau klik untuk memilih</p><p className="mt-1 text-xs text-slate-500">CSV, XLSX, atau XLS • Maksimal 5 MB</p><input ref={fileInputRef} type="file" accept=".csv,.txt,.xlsx,.xls" onChange={(event) => selectImportFile(event.target.files?.[0])} className="sr-only" /></div>
         {importFile && <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-blue-50 p-3"><div className="min-w-0"><p className="truncate text-sm font-bold text-navy-950">{importFile.name}</p><p className="text-xs text-blue-700">{(importFile.size / 1024).toFixed(1)} KB • Siap diunggah</p></div><button type="button" onClick={() => { setImportFile(null); if (fileInputRef.current) fileInputRef.current.value = '' }} className="shrink-0 text-xs font-bold text-red-600">Hapus</button></div>}
         <button type="button" onClick={importUsers} disabled={!importFile || busy} className="mt-3 min-h-11 w-full rounded-xl bg-navy-950 px-4 text-sm font-bold text-white hover:bg-navy-900 disabled:cursor-not-allowed disabled:opacity-40"><BusyLabel busy={Boolean(importProgress)} busyText="Mengimpor data…">Mulai import</BusyLabel></button>
@@ -401,7 +436,33 @@ export default function UsersPage() {
       </Panel>
     </div>
 
-    {importResult && <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-black">Hasil import</h2><p className="text-sm text-slate-500">{importResult.filename}</p></div><div className="flex items-center gap-3"><Link to="/members" className="text-xs font-bold text-blue-700 hover:underline">Lihat daftar anggota</Link><span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">Selesai</span></div></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded-2xl bg-slate-50 p-4 text-center"><p className="text-2xl font-black">{importResult.total_rows}</p><p className="text-xs text-slate-500">Total baris</p></div><div className="rounded-2xl bg-emerald-50 p-4 text-center"><p className="text-2xl font-black text-emerald-700">{importResult.success_rows}</p><p className="text-xs text-emerald-700">Anggota baru</p></div><div className="rounded-2xl bg-blue-50 p-4 text-center"><p className="text-2xl font-black text-blue-700">{importResult.updated_rows ?? 0}</p><p className="text-xs text-blue-700">Diperbarui</p></div><div className="rounded-2xl bg-red-50 p-4 text-center"><p className="text-2xl font-black text-red-700">{importResult.failed_rows}</p><p className="text-xs text-red-700">Gagal</p></div></div>{importResult.notes?.length > 0 && <details className="mt-4 overflow-hidden rounded-2xl border border-blue-200"><summary className="cursor-pointer bg-blue-50 px-4 py-3 font-bold text-blue-800">Lihat catatan penyesuaian data ({importResult.notes.length})</summary><div className="max-h-72 divide-y divide-blue-100 overflow-y-auto">{importResult.notes.map((note, index) => <div key={index} className="p-4 text-sm"><p className="font-bold text-slate-900">Baris {note.row_number}{note.username ? ` • ${note.username}` : ''}</p><p className="mt-1 text-slate-600">{note.message}</p></div>)}</div></details>}{importResult.failures?.length > 0 && <details className="mt-4 overflow-hidden rounded-2xl border border-red-200"><summary className="cursor-pointer bg-red-50 px-4 py-3 font-bold text-red-800">Lihat baris yang gagal ({importResult.failures.length})</summary><div className="max-h-72 divide-y divide-red-100 overflow-y-auto">{importResult.failures.map((failure) => <div key={failure.id} className="p-4 text-sm"><p className="font-bold text-slate-900">Baris {failure.row_number}: {failure.row_data?.name ?? failure.row_data?.username ?? 'Data tidak valid'}</p><ul className="mt-1 list-disc pl-5 text-red-700">{Object.values(failure.errors ?? {}).flat().map((item, index) => <li key={index}>{item}</li>)}</ul></div>)}</div></details>}</section>}
+    <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div><h2 className="text-lg font-black">Riwayat import</h2><p className="text-sm text-slate-500">Setiap import tersimpan beserta catatan dan baris gagalnya, jadi hasil import lama tidak hilang saat Anda mengimpor lagi.</p></div>
+        <button type="button" onClick={loadHistory} disabled={historyLoading} className="text-xs font-bold text-blue-700 hover:underline disabled:opacity-50">{historyLoading ? 'Memuat…' : 'Muat ulang'}</button>
+      </div>
+      {historyLoading && importHistory.length === 0
+        ? <p className="mt-4 text-sm text-slate-500">Memuat riwayat import…</p>
+        : importHistory.length === 0
+          ? <p className="mt-4 text-sm text-slate-500">Belum ada import anggota yang pernah dijalankan.</p>
+          : <ul className="mt-4 divide-y divide-slate-100">{importHistory.map((job) => <li key={job.id}>
+            <button type="button" onClick={() => openHistory(job)} aria-current={openHistoryId === job.id} className={`flex w-full flex-wrap items-center justify-between gap-3 rounded-2xl p-3 text-left transition ${openHistoryId === job.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-bold text-navy-950">{job.filename}</span>
+                <span className="block text-xs text-slate-500">{formatDate(job.created_at, true)}{job.user?.name ? ` • oleh ${job.user.name}` : ''}{job.status !== 'completed' ? ` • ${job.status === 'failed' ? 'gagal diproses' : job.status}` : ''}</span>
+              </span>
+              <span className="flex shrink-0 flex-wrap gap-1.5 text-[11px] font-bold">
+                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700">{job.success_rows} baru</span>
+                <span className="rounded-full bg-blue-100 px-2.5 py-1 text-blue-700">{job.updated_rows ?? 0} diperbarui</span>
+                <span className="rounded-full bg-red-100 px-2.5 py-1 text-red-700">{job.failed_rows} gagal</span>
+              </span>
+            </button>
+          </li>)}</ul>}
+    </section>
+
+    {importResult && <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-black">Hasil import</h2><p className="text-sm text-slate-500">{importResult.filename}{importResult.created_at ? ` • ${formatDate(importResult.created_at, true)}` : ''}</p></div><div className="flex items-center gap-3"><Link to="/members" className="text-xs font-bold text-blue-700 hover:underline">Lihat daftar anggota</Link>{importResult.status === 'failed'
+      ? <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-700">Gagal diproses</span>
+      : <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">Selesai</span>}</div></div><div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded-2xl bg-slate-50 p-4 text-center"><p className="text-2xl font-black">{importResult.total_rows}</p><p className="text-xs text-slate-500">Total baris</p></div><div className="rounded-2xl bg-emerald-50 p-4 text-center"><p className="text-2xl font-black text-emerald-700">{importResult.success_rows}</p><p className="text-xs text-emerald-700">Anggota baru</p></div><div className="rounded-2xl bg-blue-50 p-4 text-center"><p className="text-2xl font-black text-blue-700">{importResult.updated_rows ?? 0}</p><p className="text-xs text-blue-700">Diperbarui</p></div><div className="rounded-2xl bg-red-50 p-4 text-center"><p className="text-2xl font-black text-red-700">{importResult.failed_rows}</p><p className="text-xs text-red-700">Gagal</p></div></div>{importResult.notes?.length > 0 && <details className="mt-4 overflow-hidden rounded-2xl border border-blue-200"><summary className="cursor-pointer bg-blue-50 px-4 py-3 font-bold text-blue-800">Lihat catatan penyesuaian data ({importResult.notes.length})</summary><div className="max-h-72 divide-y divide-blue-100 overflow-y-auto">{importResult.notes.map((note, index) => <div key={index} className="p-4 text-sm"><p className="font-bold text-slate-900">Baris {note.row_number}{note.username ? ` • ${note.username}` : ''}</p><p className="mt-1 text-slate-600">{note.message}</p></div>)}</div></details>}{importResult.failures?.length > 0 && <details className="mt-4 overflow-hidden rounded-2xl border border-red-200"><summary className="cursor-pointer bg-red-50 px-4 py-3 font-bold text-red-800">Lihat baris yang gagal ({importResult.failures.length})</summary><div className="max-h-72 divide-y divide-red-100 overflow-y-auto">{importResult.failures.map((failure) => <div key={failure.id} className="p-4 text-sm"><p className="font-bold text-slate-900">Baris {failure.row_number}: {failure.row_data?.name ?? failure.row_data?.username ?? 'Data tidak valid'}</p><ul className="mt-1 list-disc pl-5 text-red-700">{Object.values(failure.errors ?? {}).flat().map((item, index) => <li key={index}>{item}</li>)}</ul></div>)}</div></details>}</section>}
   </div>
 }
 

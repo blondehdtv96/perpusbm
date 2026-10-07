@@ -10,6 +10,7 @@ use App\Models\Loan;
 use App\Models\Major;
 use App\Models\Student;
 use App\Models\User;
+use App\Services\MemberService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -230,7 +231,7 @@ class MvpModulesTest extends TestCase
         $deleted->delete();
 
         $csv = "name,username,nis_nip,member_type,class_or_position,password\n".
-            "Nama Baru,siswa.lama,2001,student,XII IPA 2,password123\n".      // sudah ada: diperbarui
+            "Nama Baru,siswa.lama,2001,student,XII IPA 2,password123\n".      // sudah ada: hanya kolom kosong yang dilengkapi
             "Siswa Kembali,siswa.hapus,2002,student,XI IPS 1,password123\n".  // pernah dihapus: dipulihkan
             "Siswa Bentrok,siswa.lama,2003,student,X IPA 1,password123\n".    // username dipakai orang lain: diberi akhiran
             "Siswa Admin,admin,2004,staff,Pustakawan,password123\n";          // bentrok akun petugas: dibuat terpisah
@@ -244,12 +245,89 @@ class MvpModulesTest extends TestCase
             ->assertJsonPath('data.success_rows', 2)
             ->assertJsonPath('data.updated_rows', 2);
         $this->assertDatabaseCount('import_failures', 0);
-        $this->assertDatabaseHas('users', ['username' => 'siswa.lama', 'nis_nip' => '2001', 'name' => 'Nama Baru', 'class_or_position' => 'XII IPA 2']);
+        // Nama lama dipertahankan karena berkas tidak dijalankan dengan mode perbarui,
+        // sedangkan kelas/jabatan yang masih kosong boleh dilengkapi dari berkas.
+        $this->assertDatabaseHas('users', ['username' => 'siswa.lama', 'nis_nip' => '2001', 'name' => 'Nama Lama', 'class_or_position' => 'XII IPA 2']);
         $this->assertDatabaseHas('users', ['username' => 'siswa.hapus', 'nis_nip' => '2002', 'status' => 'active', 'deleted_at' => null]);
         $this->assertDatabaseHas('users', ['username' => 'siswa.lama2', 'nis_nip' => '2003']);
         $this->assertDatabaseHas('users', ['username' => 'admin2', 'name' => 'Siswa Admin']);
         $this->assertTrue(User::where('username', 'admin')->firstOrFail()->hasRole('super_admin'));
         $this->assertTrue($existing->fresh()->password === $existing->password, 'Password anggota lama tidak boleh berubah saat import.');
+    }
+
+    public function test_importing_the_same_file_twice_keeps_the_data_already_stored(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+        $csv = "name,username,nis_nip,member_type,kelas,jabatan,password\n".
+            "Siswa Satu,siswa.satu,7001,student,10 TKJ A,,password123\n";
+
+        $this->actingAs($admin)->post('/api/imports/users', [
+            'file' => UploadedFile::fake()->createWithContent('anggota.csv', $csv),
+        ], ['Accept' => 'application/json'])->assertCreated()->assertJsonPath('data.success_rows', 1);
+
+        // Data dirapikan lewat halaman Anggota setelah import pertama.
+        $user = User::where('username', 'siswa.satu')->firstOrFail();
+        $user->update(['name' => 'Siswa Satu Rapi']);
+        $naikKelas = ClassGroup::query()
+            ->whereHas('educationLevel', fn ($query) => $query->where('name', '11'))
+            ->whereHas('major', fn ($query) => $query->where('code', 'TKJ'))
+            ->firstOrFail();
+        app(MemberService::class)->assignClass($user, $naikKelas);
+        $password = $user->fresh()->password;
+
+        // Berkas yang sama diimpor lagi: tidak boleh ada data yang terbuang.
+        $this->actingAs($admin)->post('/api/imports/users', [
+            'file' => UploadedFile::fake()->createWithContent('anggota.csv', $csv),
+        ], ['Accept' => 'application/json'])
+            ->assertCreated()
+            ->assertJsonPath('data.success_rows', 0)
+            ->assertJsonPath('data.updated_rows', 1)
+            ->assertJsonPath('data.failed_rows', 0);
+
+        $user = $user->fresh();
+        $this->assertSame('Siswa Satu Rapi', $user->name, 'Nama yang sudah dirapikan tidak boleh ditimpa berkas import.');
+        $this->assertSame($password, $user->password, 'Password anggota lama tidak boleh berubah saat import ulang.');
+        $this->assertSame($naikKelas->id, $user->student->currentAssignment->class_group_id, 'Penempatan kelas terbaru tidak boleh dikembalikan oleh import ulang.');
+        $this->assertSame(1, User::where('nis_nip', '7001')->count(), 'Import ulang tidak boleh membuat anggota kembar.');
+
+        // Mode perbarui tetap tersedia untuk petugas yang memang ingin menimpa data lama.
+        $this->actingAs($admin)->post('/api/imports/users', [
+            'file' => UploadedFile::fake()->createWithContent('anggota.csv', $csv),
+            'update_existing' => '1',
+        ], ['Accept' => 'application/json'])->assertCreated()->assertJsonPath('data.updated_rows', 1);
+
+        $user = $user->fresh();
+        $this->assertSame('Siswa Satu', $user->name);
+        $this->assertSame('10 TKJ A', $user->student->currentAssignment->classGroup->display_name);
+        $this->assertSame($password, $user->password, 'Mode perbarui pun tidak mengganti password anggota.');
+    }
+
+    public function test_import_history_keeps_every_past_import(): void
+    {
+        $this->seed();
+        $admin = User::where('username', 'admin')->firstOrFail();
+
+        foreach ([['pertama', '8001'], ['kedua', '8002']] as [$slug, $nis]) {
+            $csv = "name,username,nis_nip,member_type,kelas,jabatan,password\n".
+                "Siswa {$slug},siswa.{$slug},{$nis},student,10 TKJ A,,password123\n";
+            $this->actingAs($admin)->post('/api/imports/users', [
+                'file' => UploadedFile::fake()->createWithContent("anggota-{$slug}.csv", $csv),
+            ], ['Accept' => 'application/json'])->assertCreated();
+        }
+
+        $response = $this->actingAs($admin)->getJson('/api/imports/users')->assertOk();
+        $this->assertCount(2, $response->json('data'));
+        $this->assertSame('anggota-kedua.csv', $response->json('data.0.filename'));
+        $this->assertSame('anggota-pertama.csv', $response->json('data.1.filename'));
+        $this->assertSame($admin->name, $response->json('data.1.user.name'));
+
+        // Hasil import yang lama tetap bisa dibuka lengkap dengan catatannya.
+        $this->actingAs($admin)
+            ->getJson('/api/imports/users/'.$response->json('data.1.id'))
+            ->assertOk()
+            ->assertJsonPath('data.filename', 'anggota-pertama.csv')
+            ->assertJsonPath('data.success_rows', 1);
     }
 
     public function test_adding_student_member_places_them_in_class_and_issues_member_number(): void

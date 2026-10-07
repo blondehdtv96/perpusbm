@@ -183,6 +183,17 @@ class MemberService
         });
     }
 
+    /** Penempatan kelas yang sedang berjalan, dipakai agar import berikutnya tidak menggeser kelas siswa. */
+    public function activePlacement(User $user): ?StudentClassAssignment
+    {
+        return StudentClassAssignment::query()
+            ->with('classGroup.educationLevel', 'classGroup.major')
+            ->whereHas('student', fn (Builder $query) => $query->where('user_id', $user->id))
+            ->where('is_active', true)
+            ->latest('id')
+            ->first();
+    }
+
     public function hasActivePlacement(User $user): bool
     {
         return $user->student()->whereHas('assignments', fn (Builder $query) => $query->where('is_active', true))->exists();

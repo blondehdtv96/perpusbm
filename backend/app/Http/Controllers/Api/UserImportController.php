@@ -43,10 +43,28 @@ class UserImportController extends Controller
 
     public function __construct(private readonly MemberService $members) {}
 
+    /** Riwayat import disimpan permanen, jadi hasil import lama tetap bisa dibuka setelah import berikutnya. */
+    public function index(Request $request): JsonResponse
+    {
+        $jobs = ImportJob::query()
+            ->with('user:id,name')
+            ->withCount('failures')
+            ->latest('id')
+            ->paginate(min(max($request->integer('per_page', 10), 1), 50));
+
+        return response()->json($jobs);
+    }
+
     public function store(Request $request): JsonResponse
     {
-        $request->validate(['file' => ['required', 'file', 'mimes:csv,txt,xlsx,xls', 'max:5120']]);
+        $request->validate([
+            'file' => ['required', 'file', 'mimes:csv,txt,xlsx,xls', 'max:5120'],
+            'update_existing' => ['nullable', 'boolean'],
+        ]);
         $file = $request->file('file');
+        // Secara bawaan import hanya melengkapi bagian yang masih kosong, sehingga mengimpor berkas
+        // yang sama lebih dari sekali tidak pernah menimpa data anggota yang sudah dirapikan petugas.
+        $updateExisting = $request->boolean('update_existing');
         $job = ImportJob::create(['user_id' => $request->user()->id, 'filename' => $file->getClientOriginalName()]);
         $spreadsheet = null;
 
@@ -74,6 +92,9 @@ class UserImportController extends Controller
             if ($layout === 'legacy') {
                 $notes[] = ['row_number' => 1, 'username' => null, 'message' => 'Berkas memakai template lama, jadi kolom kelas/jabatan disimpan sebagai teks biasa tanpa penempatan kelas. Unduh template terbaru untuk menempatkan siswa lewat kolom kelas.'];
             }
+            $notes[] = ['row_number' => 1, 'username' => null, 'message' => $updateExisting
+                ? 'Mode perbarui aktif: anggota yang sudah terdaftar mengikuti isi berkas, jadi data lamanya ditimpa. Password lama tetap dipakai.'
+                : 'Anggota yang sudah terdaftar hanya dilengkapi pada bagian yang masih kosong, sedangkan data lama dan penempatan kelasnya tetap disimpan. Centang "Perbarui data anggota yang sudah terdaftar" bila berkas ini memang dimaksudkan menimpa data lama.'];
 
             foreach ($rows as $offset => $values) {
                 if (! array_filter($values, fn ($value) => $value !== null && $value !== '')) {
@@ -122,7 +143,7 @@ class UserImportController extends Controller
                         'nis_nip' => $data['nis_nip'] ?? null,
                         'member_type' => $data['member_type'],
                         'class_or_position' => $placement['label'],
-                    ], $password, $placement['class_group']);
+                    ], $password, $placement['class_group'], $updateExisting);
                 } catch (Throwable $exception) {
                     report($exception);
                     $this->recordFailure($job, $rowNumber, $row, [
@@ -453,11 +474,14 @@ class UserImportController extends Controller
      * Simpan satu baris anggota tanpa pernah menggagalkan baris karena bentrok unik:
      * anggota lama dipakai ulang (termasuk yang pernah dihapus) dan username bentrok diberi akhiran.
      *
+     * Anggota yang sudah terdaftar tidak pernah kehilangan datanya: tanpa mode perbarui, berkas
+     * hanya mengisi kolom yang masih kosong dan setiap perbedaan dicatat sebagai catatan.
+     *
      * @return array{user: User, created: bool, notes: array<int, string>}
      */
-    private function saveMember(array $data, string $password, ?ClassGroup $classGroup): array
+    private function saveMember(array $data, string $password, ?ClassGroup $classGroup, bool $updateExisting = false): array
     {
-        return DB::transaction(function () use ($data, $password, $classGroup): array {
+        return DB::transaction(function () use ($data, $password, $classGroup, $updateExisting): array {
             $notes = [];
             $nisNip = $data['nis_nip'] ?? null;
             $existing = $nisNip !== null ? User::withTrashed()->where('nis_nip', $nisNip)->first() : null;
@@ -478,55 +502,135 @@ class UserImportController extends Controller
 
             $user = $existing ?? new User;
             $created = $existing === null;
-            $attributes = ['name' => $data['name'], 'member_type' => $data['member_type']];
+            $attributes = [];
 
             if ($created) {
-                $attributes['username'] = $this->availableUsername($data['username']);
-                $attributes['password'] = Hash::make($password);
-                $attributes['status'] = 'active';
+                $attributes = [
+                    'name' => $data['name'],
+                    'member_type' => $data['member_type'],
+                    'username' => $this->availableUsername($data['username']),
+                    'password' => Hash::make($password),
+                    'status' => 'active',
+                ];
                 if ($attributes['username'] !== $data['username']) {
                     $notes[] = "Username {$data['username']} sudah dipakai, anggota ini disimpan dengan username {$attributes['username']}.";
                 }
-            } elseif ($data['username'] !== $user->username) {
-                if ($this->isTaken('username', $data['username'], $user->getKey())) {
-                    $notes[] = "Username {$data['username']} sudah dipakai akun lain, username {$user->username} dipertahankan.";
-                } else {
-                    $attributes['username'] = $data['username'];
+                if ($nisNip !== null) {
+                    if ($this->isTaken('nis_nip', $nisNip)) {
+                        $notes[] = "NIS/NIP {$nisNip} sudah dipakai anggota lain sehingga tidak disimpan pada baris ini.";
+                    } else {
+                        $attributes['nis_nip'] = $nisNip;
+                    }
                 }
-            }
-
-            if ($nisNip !== null) {
-                if ($this->isTaken('nis_nip', $nisNip, $user->getKey())) {
-                    $notes[] = "NIS/NIP {$nisNip} sudah dipakai anggota lain sehingga tidak disimpan pada baris ini.";
-                } else {
-                    $attributes['nis_nip'] = $nisNip;
+                if ($data['class_or_position'] !== null) {
+                    $attributes['class_or_position'] = $data['class_or_position'];
                 }
-            }
-
-            if ($data['class_or_position'] !== null) {
-                $attributes['class_or_position'] = $data['class_or_position'];
+            } else {
+                $merge = $this->mergeExisting($user, [...$data, 'nis_nip' => $nisNip], $updateExisting);
+                $attributes = $merge['attributes'];
+                $notes = [...$notes, ...$merge['notes']];
             }
 
             if (! $created && $user->trashed()) {
                 $user->restore();
                 $attributes['status'] = 'active';
-                $notes[] = 'Anggota ini pernah dihapus dan kini diaktifkan kembali dengan data terbaru.';
-            } elseif (! $created) {
-                $notes[] = 'Anggota sudah terdaftar, datanya diperbarui dan password lama tetap dipakai.';
+                $notes[] = 'Anggota ini pernah dihapus dan kini diaktifkan kembali tanpa kehilangan data lamanya.';
             }
 
-            $user->fill($attributes)->save();
+            if ($attributes || ! $user->exists) {
+                $user->fill($attributes)->save();
+            }
 
+            $memberType = in_array($user->member_type, ['student', 'staff'], true) ? $user->member_type : $data['member_type'];
             if ($created || $user->roles->isEmpty() || $user->roles->pluck('name')->diff(['student', 'staff'])->isEmpty()) {
-                $user->syncRoles([$data['member_type']]);
+                $user->syncRoles([$memberType]);
+            }
+
+            // Penempatan kelas yang sudah ada juga termasuk data yang tidak boleh terbuang: tanpa
+            // mode perbarui, kelas pada berkas hanya dipakai bila siswa belum punya penempatan aktif.
+            $placement = $classGroup;
+            if ($placement && ! $created && ! $updateExisting) {
+                $active = $this->members->activePlacement($user);
+                if ($active && (int) $active->class_group_id !== (int) $placement->id) {
+                    $placement = null;
+                    $notes[] = "Siswa ini sudah ditempatkan pada kelas {$active->classGroup?->display_name}, jadi kelas pada berkas tidak dipakai dan penempatan lamanya tetap disimpan.";
+                }
             }
 
             // Nomor anggota dan penempatan kelas dibuat lewat jalur yang sama dengan form tambah
             // anggota, jadi data hasil import tidak pernah berbeda bentuk dari data entri manual.
-            $this->members->syncProfile($user, $classGroup);
+            $this->members->syncProfile($user, $placement);
 
             return ['user' => $user, 'created' => $created, 'notes' => $notes];
         });
+    }
+
+    /**
+     * Menggabungkan satu baris berkas dengan anggota yang sudah terdaftar. Tanpa mode perbarui,
+     * kolom yang sudah terisi dipertahankan dan hanya kolom yang masih kosong dilengkapi, sehingga
+     * mengimpor berkas yang sama lebih dari sekali tidak pernah membuang data yang sudah ada.
+     * Setiap perbedaan antara berkas dan data tersimpan dicatat agar petugas tetap mengetahuinya.
+     *
+     * @param  array<string, ?string>  $data
+     * @return array{attributes: array<string, string>, notes: array<int, string>}
+     */
+    private function mergeExisting(User $user, array $data, bool $updateExisting): array
+    {
+        $labels = [
+            'name' => 'Nama',
+            'username' => 'Username',
+            'nis_nip' => 'NIS/NIP',
+            'member_type' => 'Tipe anggota',
+            'class_or_position' => 'Kelas/jabatan',
+        ];
+        $attributes = [];
+        $notes = [];
+        $kept = [];
+        $filled = [];
+        $changed = [];
+
+        foreach ($labels as $column => $label) {
+            $value = $data[$column] ?? null;
+            if ($value === null || trim($value) === '') {
+                continue;
+            }
+
+            $stored = $user->{$column};
+            $empty = $stored === null || trim((string) $stored) === '';
+
+            if (! $empty && (string) $stored === $value) {
+                continue;
+            }
+            if (! $empty && ! $updateExisting) {
+                $kept[] = "{$label} tetap \"{$stored}\" meski berkas menulis \"{$value}\"";
+
+                continue;
+            }
+            if (in_array($column, ['username', 'nis_nip'], true) && $this->isTaken($column, $value, $user->getKey())) {
+                $notes[] = "{$label} {$value} sudah dipakai akun lain, jadi {$label} anggota ini tidak diubah.";
+
+                continue;
+            }
+
+            $attributes[$column] = $value;
+            if ($empty) {
+                $filled[] = "{$label} dilengkapi menjadi \"{$value}\"";
+            } else {
+                $changed[] = "{$label} diubah dari \"{$stored}\" menjadi \"{$value}\"";
+            }
+        }
+
+        if ($kept) {
+            $notes[] = 'Anggota sudah terdaftar, jadi data lamanya tetap disimpan: '.implode('; ', $kept).'.';
+        }
+        if ($filled) {
+            $notes[] = 'Bagian yang masih kosong pada anggota ini dilengkapi dari berkas: '.implode('; ', $filled).'.';
+        }
+        if ($changed) {
+            $notes[] = 'Mode perbarui aktif, jadi data anggota ini ditimpa oleh berkas: '.implode('; ', $changed).'.';
+        }
+
+        return ['attributes' => $attributes, 'notes' => $notes];
     }
 
     private function availableUsername(string $username): string

@@ -60,6 +60,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::delete('/users/{user}', [UserController::class, 'destroy'])->middleware('permission:users.delete');
     Route::get('/users/{user}/card', [UserController::class, 'card'])->middleware('permission:users.view');
     Route::post('/users/{user}/rotate-qr', [UserController::class, 'rotateQr'])->middleware('permission:users.update');
+    Route::get('/imports/users', [UserImportController::class, 'index'])->middleware('permission:users.view');
     Route::post('/imports/users', [UserImportController::class, 'store'])->middleware('permission:users.create');
     Route::get('/imports/users/template', [UserImportController::class, 'template'])->middleware('permission:users.create');
     Route::get('/imports/users/{importJob}', [UserImportController::class, 'show'])->middleware('permission:users.view');
